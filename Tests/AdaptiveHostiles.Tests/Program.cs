@@ -85,6 +85,123 @@ await Check("official API client sends typed schema to correct endpoint", async 
     Require(body.RootElement.GetProperty("questions").TryGetProperty("safe", out _), "missing questions");
 });
 
+await Check("roster is independent of raid points, deterministic and bounded", async () =>
+{
+    var plan = new RaidPlan(RaidScale.Invasion, RaidApproach.Breach, 12, true, true);
+    var a = RosterGenerator.Generate(plan, Kinds(), seed: 42);
+    var b = RosterGenerator.Generate(plan, Kinds(), seed: 42);
+    Require(a.Entries.SequenceEqual(b.Entries), "same seed produced different roster");
+    Require(a.Entries.Count == 12 && !a.Bypassed, "wrong roster size");
+    Require(a.Entries.Count(e => e.IsOperative) == 1, "expected exactly one operative");
+    var capped = RosterGenerator.Generate(plan with { IncludeOperative = false }, Kinds(), 1,
+        new AdaptiveHostilesSettings { MaxRaiders = 5, CountMultiplier = 3 });
+    Require(capped.Entries.Count == 5 && capped.Entries.All(e => !e.IsOperative), "cap/operative flag ignored");
+    var none = RosterGenerator.Generate(plan, Array.Empty<RosterKind>(), 1);
+    Require(none.Bypassed && none.Warning is not null, "empty faction must defer to vanilla");
+    await Task.CompletedTask;
+});
+
+await Check("operative profile and elite roll are seeded and in range", async () =>
+{
+    var p = RosterGenerator.RollOperativeProfile(7);
+    Require(p == RosterGenerator.RollOperativeProfile(7), "profile not deterministic");
+    Require(p.Shooting is >= 16 and <= 20 && p.Melee is >= 14 and <= 20, "skills out of range");
+    var r = RosterGenerator.RollElite(99);
+    Require(r is >= 0 and < 1 && r == RosterGenerator.RollElite(99), "elite roll invalid");
+    await Task.CompletedTask;
+});
+
+await Check("candidate enumeration is bounded, reachable and deterministic", async () =>
+{
+    var map = new GridMap();
+    var list = CandidateEnumerator.Enumerate(map, 50, 50, new[] { (60, 50) });
+    Require(list.Count > 0 && list.Count <= OperativePlanner.MaxDestinations - 1, "bad candidate count");
+    Require(list.All(c => c.Reachable && map.IsReachable(c.X, c.Z) && c.Id == $"cell_{c.X}_{c.Z}"), "bad candidate");
+    Require(list.Select(c => c.Id).Distinct().Count() == list.Count, "duplicate ids");
+    Require(list.Select(c => c.Purpose).Distinct().Count() > 1, "no purpose mix");
+    Require(list.Select(c => c.Id).SequenceEqual(CandidateEnumerator.Enumerate(map, 50, 50, new[] { (60, 50) }).Select(c => c.Id)), "nondeterministic");
+    await Task.CompletedTask;
+});
+
+await Check("order resolver revalidates and never trusts stale cells", async () =>
+{
+    var snap = Battlefield();
+    var go = new OperativeDecision("cover_142_87", "colonist_1", TacticalStance.Aggressive, true);
+    var open = new GridMap { Open = true };
+    var record = new OperativeRecord("operative_1", "Pirate");
+    var ok = OperativeOrderResolver.Resolve(go, snap, open, PawnBlock.None, record, tick: 10);
+    Require(ok.Kind == OrderKind.MoveTo && ok.X == 142 && ok.Z == 87 && ok.TargetId == "colonist_1", "move not issued");
+    Require(record.Log.Count == 1 && record.Log[0].X == 142 && record.Log[0].DestinationId == "cover_142_87", "log mismatch");
+    var closed = new GridMap { Open = false };
+    Require(OperativeOrderResolver.Resolve(go, snap, closed, PawnBlock.None).Kind == OrderKind.VanillaFallback, "stale cell accepted");
+    var fake = go with { DestinationId = "cell_1_1" };
+    Require(OperativeOrderResolver.Resolve(fake, snap, open, PawnBlock.None).Kind == OrderKind.VanillaFallback, "unknown id accepted");
+    Require(OperativeOrderResolver.Resolve(go, snap, open, PawnBlock.Downed).Kind == OrderKind.None, "interrupted downed pawn");
+    Require(OperativeOrderResolver.Resolve(go with { DestinationId = "hold" }, snap, open, PawnBlock.None).Kind == OrderKind.Hold, "hold broken");
+    await Task.CompletedTask;
+});
+
+await Check("registry cooldown, commitment and block rules", async () =>
+{
+    var reg = new OperativeRegistry();
+    var r = reg.Register("p1", "Pirate");
+    Require(ReferenceEquals(r, reg.Register("p1", "Pirate")), "duplicate record");
+    Require(OperativeRegistry.ShouldRequest(r, 0, TacticalTrigger.None, PawnBlock.None), "initial request due");
+    OperativeRegistry.ScheduleNext(r, 1000, seed: 5);
+    Require(r.NextDecisionTick is >= 1120 and <= 1300, "cooldown out of range");
+    Require(!OperativeRegistry.ShouldRequest(r, 1010, TacticalTrigger.Damaged, PawnBlock.None), "ignored commitment");
+    Require(OperativeRegistry.ShouldRequest(r, 1100, TacticalTrigger.Damaged, PawnBlock.None), "no reaction to damage");
+    Require(!OperativeRegistry.ShouldRequest(r, 5000, TacticalTrigger.None, PawnBlock.MentalBreak), "interrupted break");
+    for (var i = 0; i < 200; i++) r.Append(new DecisionLogEntry(i, "hold", 0, 0, null, TacticalStance.Defensive, false));
+    Require(r.Log.Count == OperativeRecord.MaxLog, "log unbounded");
+    Require(reg.Remove("p1") && !reg.TryGet("p1", out _), "remove failed");
+    await Task.CompletedTask;
+});
+
+await Check("scheduler throttles, times out, backs off and drops stale results", async () =>
+{
+    var now = DateTime.UtcNow;
+    var clock = () => now;
+    using var s = new JevScheduler<int>(new AdaptiveHostilesSettings { MaxConcurrentRequests = 1, NetworkDeadline = TimeSpan.FromMilliseconds(100) },
+        isModelResult: v => v > 0, now: clock, baseBackoff: TimeSpan.FromSeconds(10));
+    var gate = new TaskCompletionSource<int>();
+    Require(s.TryBegin("a", _ => gate.Task), "first begin refused");
+    Require(!s.TryBegin("a", _ => Task.FromResult(1)), "duplicate key allowed");
+    Require(!s.TryBegin("b", _ => Task.FromResult(1)), "concurrency cap ignored");
+    gate.SetResult(7);
+    await WaitFor(() => s.InFlightCount == 0);
+    Require(s.TryTake("a", TimeSpan.FromSeconds(1), out var got) && got == 7, "result lost");
+    Require(!s.TryTake("a", TimeSpan.FromSeconds(1), out _), "result delivered twice");
+
+    Require(s.TryBegin("t", async token => { await Task.Delay(Timeout.Infinite, token); return 1; }), "begin refused");
+    await WaitFor(() => s.InFlightCount == 0);
+    Require(s.ConsecutiveFailures == 1, "timeout not counted");
+    Require(!s.TryBegin("c", _ => Task.FromResult(1)), "no backoff after failure");
+    now = now.AddSeconds(11);
+    Require(s.TryBegin("c", _ => Task.FromResult(1)), "still blocked after backoff");
+    await WaitFor(() => s.InFlightCount == 0);
+    Require(s.ConsecutiveFailures == 0, "success did not clear failures");
+
+    var late = new TaskCompletionSource<int>();
+    Require(s.TryBegin("d", _ => late.Task), "begin refused");
+    s.Reset();
+    late.SetResult(5);
+    await Task.Delay(50);
+    Require(!s.TryTake("d", TimeSpan.FromSeconds(1), out _), "stale result survived reset");
+    Require(s.TryBegin("d", _ => Task.FromResult(2)), "key stuck after reset");
+});
+
+await Check("decision cache expires", async () =>
+{
+    var now = DateTime.UtcNow;
+    var cache = new DecisionCache<int>(TimeSpan.FromSeconds(30), () => now);
+    cache.Put("k", 3);
+    Require(cache.TryGet("k", out var v) && v == 3, "cache miss");
+    now = now.AddSeconds(31);
+    Require(!cache.TryGet("k", out _), "expired entry served");
+    await Task.CompletedTask;
+});
+
 Console.WriteLine($"Tests: {passed} passed, {failed} failed");
 Environment.ExitCode = failed == 0 ? 0 : 1;
 
@@ -102,6 +219,18 @@ async Task Check(string name, Func<Task> test)
         failed++;
     }
 }
+
+static async Task WaitFor(Func<bool> condition)
+{
+    for (var i = 0; i < 200 && !condition(); i++) await Task.Delay(10);
+    if (!condition()) throw new Exception("timed out waiting for condition");
+}
+
+static RosterKind[] Kinds() => new[]
+{
+    new RosterKind("Thug", RosterRole.Melee), new RosterKind("Gunner", RosterRole.Ranged),
+    new RosterKind("Grenadier", RosterRole.Heavy)
+};
 
 static void Require(bool condition, string message)
 {
@@ -158,4 +287,13 @@ sealed class CaptureHandler : HttpMessageHandler
                 """, Encoding.UTF8, "application/json")
         };
     }
+}
+
+sealed class GridMap : ITacticalMap
+{
+    public bool Open { get; set; } = true;
+    public bool IsStandable(int x, int z) => Open && x >= 0 && z >= 0 && x < 200 && z < 200 && (x + z) % 7 != 0;
+    public bool IsReachable(int x, int z) => Open;
+    public float CoverAt(int x, int z) => (x % 3) / 2f;
+    public float ExposureAt(int x, int z) => (z % 4) / 4f;
 }

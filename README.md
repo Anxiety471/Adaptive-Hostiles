@@ -2,7 +2,7 @@
 
 **Jev-assisted hostile raids and elite pawn tactics for RimWorld.**
 
-> **Status: initial codebase / pre-alpha.** The TypeSafe API client, validated decision planners, deterministic fallbacks, unit-test harness, and RimWorld mod bootstrap are present. The game-independent core (roster generator, candidate enumeration, order revalidation, operative registry, async scheduler) is also implemented and tested. The RimWorld-facing hooks (raid interception, map sampling, job assignment, save/load) and in-game testing are **not yet implemented**. Installing this scaffold will **not** alter raids.
+> **Status: initial codebase / pre-alpha.** The TypeSafe API client, validated decision planners, deterministic fallbacks, unit-test harness, and RimWorld mod bootstrap are present. The game-independent core (roster generator, candidate enumeration, order revalidation, operative registry, async scheduler) is also implemented and tested. The RimWorld-facing hooks (raid interception, map sampling, job assignment, save/load) and in-game testing are **not yet implemented**. Hostile-raid composition hooks now exist in the Mod project but are **unverified in game** (no RimWorld references were available when written); map sampling and Operative job control are still missing.
 
 ## Design
 
@@ -46,7 +46,7 @@ dotnet build Source/AdaptiveHostiles.Mod/AdaptiveHostiles.Mod.csproj -c Release 
   -p:HarmonyDll="/path/to/Harmony/1.7/Assemblies/0Harmony.dll"
 ```
 
-The mod project's build output is `1.7/Assemblies/`. Copy the **entire repository mod folder** (excluding Source, Tests, and .git if preferred) into RimWorld's local `Mods` directory and enable Harmony above Adaptive Hostiles. At this stage the mod only logs that the bootstrap loaded.
+The mod project's build output is `1.7/Assemblies/`. Copy the **entire repository mod folder** (excluding Source, Tests, and .git if preferred) into RimWorld's local `Mods` directory and enable Harmony above Adaptive Hostiles. The mod replaces eligible hostile raid rosters (Harmony patches in `Source/AdaptiveHostiles.Mod/Raids`).
 
 For development, set `TYPESAFE_API_KEY` in your environment. The core client sends requests to TypeSafe's official `https://api.typesafe.ai/v1/systemone` endpoint with model `jev-latest`. **Never commit an API key.** The game-facing settings and background request scheduler have not yet been connected.
 
@@ -65,7 +65,7 @@ For development, set `TYPESAFE_API_KEY` in your environment. The core client sen
 - [x] Implement Jev request/response validation and decisions from candidate lists
 - [ ] Verify assembly references against an installed RimWorld 1.7 beta
 - [ ] Add on-game-thread colony snapshot and background/cached Jev raid evaluation
-- [ ] Replace **hostile raid composition** without consuming raid points
+- [x] Replace **hostile raid composition** without consuming raid points *(hooks written, not yet verified in game)*
 - [ ] Generate faction-appropriate rare Operatives and persist their identities
 - [ ] Observe tactical map, enumerate reachable cells, and asynchronously ask Jev
 - [ ] Convert Jev-selected cells/targets into RimWorld jobs with safe reevaluation

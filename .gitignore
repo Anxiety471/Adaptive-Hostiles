@@ -1,0 +1,15 @@
+# Build output; the whole mod root is the deployment folder.
+**/bin/
+**/obj/
+1.7/Assemblies/
+.vs/
+.vscode/
+*.user
+*.suo
+TestResults/
+
+# Never commit credentials or local game install paths.
+.env
+.env.*
+*.secrets.json
+Directory.Build.targets.local

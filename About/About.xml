@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModMetaData>
+  <name>Adaptive Hostiles</name>
+  <author>Anxiety471</author>
+  <packageId>anxiety471.adaptivehostiles</packageId>
+  <supportedVersions>
+    <li>1.7</li>
+  </supportedVersions>
+  <modDependencies>
+    <li>
+      <packageId>brrainz.harmony</packageId>
+      <displayName>Harmony</displayName>
+      <steamWorkshopUrl>steam://url/CommunityFilePage/2009463077</steamWorkshopUrl>
+    </li>
+  </modDependencies>
+  <loadAfter>
+    <li>brrainz.harmony</li>
+  </loadAfter>
+  <description>Foundation for Jev-assisted raid composition and rare, tactically autonomous hostile Operatives. Pre-alpha: gameplay hooks are not yet enabled.</description>
+</ModMetaData>

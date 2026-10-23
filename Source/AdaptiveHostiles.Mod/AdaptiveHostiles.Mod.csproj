@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>AdaptiveHostiles</AssemblyName>
+    <RootNamespace>AdaptiveHostiles.Mod</RootNamespace>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <OutputPath>../../1.7/Assemblies/</OutputPath>
+    <RimWorldDir Condition="'$(RimWorldDir)' == ''">$(RIMWORLD_DIR)</RimWorldDir>
+    <HarmonyDll Condition="'$(HarmonyDll)' == ''">$(HARMONY_DLL)</HarmonyDll>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../AdaptiveHostiles.Core/AdaptiveHostiles.Core.csproj" />
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(RimWorldDir)/Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Waylith">
+      <HintPath>$(RimWorldDir)/Waylith.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityStubs">
+      <HintPath>$(RimWorldDir)/UnityStubs.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(HarmonyDll)</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="ValidateGameReferences" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(RimWorldDir)/Assembly-CSharp.dll')" Text="Set RimWorldDir to the install root of RimWorld 1.7 beta (Assembly-CSharp.dll)." />
+    <Error Condition="!Exists('$(RimWorldDir)/Waylith.dll')" Text="RimWorld 1.7 Waylith.dll is missing." />
+    <Error Condition="!Exists('$(RimWorldDir)/UnityStubs.dll')" Text="RimWorld 1.7 UnityStubs.dll is missing." />
+    <Error Condition="!Exists('$(HarmonyDll)')" Text="Set HarmonyDll to the RimWorld 1.7 Harmony 3 assembly." />
+  </Target>
+</Project>

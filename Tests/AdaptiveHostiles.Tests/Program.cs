@@ -111,6 +111,28 @@ await Check("operative profile and elite roll are seeded and in range", async ()
     await Task.CompletedTask;
 });
 
+await Check("operative gear is seeded, tech-bounded and falls back to melee", async () =>
+{
+    var items = new List<GearCandidate>
+    {
+        new("Revolver", GearSlot.RangedWeapon, 4, 8f), new("Rifle", GearSlot.RangedWeapon, 4, 12f),
+        new("ChargeRifle", GearSlot.RangedWeapon, 5, 20f), new("Bow", GearSlot.RangedWeapon, 3, 5f),
+        new("Club", GearSlot.MeleeWeapon, 2, 4f),
+        new("FlakVest", GearSlot.BodyArmor, 4, 1.2f), new("Marine", GearSlot.BodyArmor, 5, 2f),
+        new("SimpleHelmet", GearSlot.Helmet, 4, 0.8f),
+    };
+    var a = OperativeGear.Roll(items, 4, 11)!;
+    Require(a == OperativeGear.Roll(items, 4, 11), "gear not deterministic");
+    Require(a.Weapon.DefName is "Revolver" or "Rifle", "weapon exceeds faction tech or isn't top tier");
+    Require(a.BodyArmor!.DefName == "FlakVest" && a.Helmet!.DefName == "SimpleHelmet", "armor wrong for tech");
+    for (ulong s = 0; s < 200; s++)
+        Require(OperativeGear.Roll(items, 5, s)!.Weapon.DefName == "ChargeRifle", "spacer weapon not used");
+    var tribal = OperativeGear.Roll(items, 2, 1)!;
+    Require(tribal.Weapon.DefName == "Club" && tribal.BodyArmor is null && tribal.Helmet is null, "neolithic fallback wrong");
+    Require(OperativeGear.Roll(new List<GearCandidate>(), 4, 1) is null, "empty candidates should yield null");
+    await Task.CompletedTask;
+});
+
 await Check("candidate enumeration is bounded, reachable and deterministic", async () =>
 {
     var map = new GridMap();

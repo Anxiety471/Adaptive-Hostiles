@@ -86,7 +86,7 @@ Example Jev movement answer (`movement.choice`): `"cell_142_87"`. The mod maps t
 | --- | --- | --- |
 | `AdaptiveHostiles.Core` | Typed snapshots, client, decisions, result validation, fallbacks | Present |
 | `AdaptiveHostiles.Mod` | RimWorld mod bootstrap, future patch hooks and adapters | Bootstrap only |
-| `RaidIncidentAdapter` | Eligible incident filtering, cached plans, roster and arrival | Core roster/cache done (`RosterGenerator`, `DecisionCache`); RimWorld hooks TODO |
+| `RaidIncidentAdapter` | Eligible incident filtering, cached plans, roster and arrival | Core roster/cache, `RaidHistory` and RimWorld composition hook done (unverified in game) |
 | `OperativeRegistry` | Mark, upgrade, track and serialize Operatives | Core records, cooldowns, decision log done; RimWorld save hooks TODO |
 | `TacticalSampler` | Perceived state, feasible target/cell enumeration | Core `CandidateEnumerator` done over `ITacticalMap`; map adapter TODO |
 | `OperativeJobExecutor` | Revalidate candidate then assign legal native jobs | Core `OperativeOrderResolver` done; job assignment TODO |

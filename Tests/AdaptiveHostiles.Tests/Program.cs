@@ -202,6 +202,36 @@ await Check("decision cache expires", async () =>
     await Task.CompletedTask;
 });
 
+await Check("raid history classifies outcomes, windows per faction and caps size", () =>
+{
+    Require(RaidHistory.Classify(6, 3, 0) == RaidResult.RaidersFailed, "half down should fail the raid");
+    Require(RaidHistory.Classify(6, 2, 1) == RaidResult.RaidersSucceeded, "colony losses should be a raider success");
+    Require(RaidHistory.Classify(6, 2, 0) == RaidResult.Inconclusive, "no losses either way is inconclusive");
+    Require(RaidHistory.Classify(0, 0, 0) == RaidResult.Inconclusive, "empty raid is inconclusive");
+
+    var history = new RaidHistory();
+    for (var i = 0; i < 7; i++) history.Record("A", i, 4, 4, 0, 0);
+    history.Record("B", 100, 4, 0, 0, 2);
+    Require(history.RecentFailed("A") == RaidHistory.RecentWindow, "window should cap at the last five raids");
+    Require(history.RecentSucceeded("A") == 0 && history.RecentSucceeded("B") == 1, "factions must be tracked separately");
+    for (var i = 0; i < 100; i++) history.Record("C", 200 + i, 4, 0, 0, 0);
+    Require(history.Entries.Count == RaidHistory.MaxEntries, "history must stay bounded");
+    return Task.CompletedTask;
+});
+
+await Check("raid memory adapts fallback scale by at most one step", async () =>
+{
+    Require(RaidPlanner.Adapt(RaidScale.Skirmish, 3, 0) == RaidScale.Assault, "repeated failures should escalate");
+    Require(RaidPlanner.Adapt(RaidScale.Invasion, 5, 0) == RaidScale.Invasion, "escalation is capped");
+    Require(RaidPlanner.Adapt(RaidScale.Assault, 0, 3) == RaidScale.Skirmish, "repeated wins should back off");
+    Require(RaidPlanner.Adapt(RaidScale.Recon, 0, 5) == RaidScale.Recon, "back-off is capped");
+    Require(RaidPlanner.Adapt(RaidScale.Assault, 2, 0) == RaidScale.Assault, "below threshold changes nothing");
+    Require(RaidPlanner.Adapt(RaidScale.Assault, 3, 3) == RaidScale.Assault, "mixed history changes nothing");
+
+    var plan = await new RaidPlanner().PlanAsync(Colony() with { RecentFailedRaids = 3 }, 1.0);
+    Require(plan.Scale == RaidScale.Invasion, "fallback plan should use raid memory");
+});
+
 Console.WriteLine($"Tests: {passed} passed, {failed} failed");
 Environment.ExitCode = failed == 0 ? 0 : 1;
 

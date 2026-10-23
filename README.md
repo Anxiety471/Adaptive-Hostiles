@@ -65,6 +65,7 @@ For development, set `TYPESAFE_API_KEY` in your environment. The core client sen
 - [x] Implement Jev request/response validation and decisions from candidate lists
 - [ ] Verify assembly references against an installed RimWorld 1.7 beta
 - [ ] Add on-game-thread colony snapshot and background/cached Jev raid evaluation
+- [x] Raid history: outcomes recorded per faction, saved with the game, fed into planning *(unverified in game)*
 - [x] Replace **hostile raid composition** without consuming raid points *(hooks written, not yet verified in game)*
 - [ ] Generate faction-appropriate rare Operatives and persist their identities
 - [ ] Observe tactical map, enumerate reachable cells, and asynchronously ask Jev

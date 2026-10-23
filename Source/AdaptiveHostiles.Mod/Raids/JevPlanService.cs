@@ -16,13 +16,16 @@ public static class JevPlanService
     private static readonly DecisionCache<RaidPlan> Cache = new(CacheTtl);
     private static readonly JevScheduler<RaidPlan> Scheduler = new(isModelResult: p => p.IsModelDecision);
     private static readonly RaidPlanner Fallback = new();
-    private static readonly RaidPlanner? Remote = CreateRemote();
+    /// <summary>One Jev client for every decision type; null without TYPESAFE_API_KEY.</summary>
+    public static IJevClient? SharedClient { get; } = CreateClient();
 
-    private static RaidPlanner? CreateRemote()
+    private static readonly RaidPlanner? Remote = SharedClient is null ? null : new RaidPlanner(SharedClient);
+
+    private static IJevClient? CreateClient()
     {
         var key = Environment.GetEnvironmentVariable("TYPESAFE_API_KEY");
         if (string.IsNullOrWhiteSpace(key)) return null;
-        return new RaidPlanner(new JevClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }, key));
+        return new JevClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }, key);
     }
 
     public static bool JevEnabled => Remote is not null;

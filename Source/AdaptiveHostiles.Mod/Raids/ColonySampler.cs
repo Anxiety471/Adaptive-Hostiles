@@ -9,6 +9,8 @@ public static class ColonySampler
 {
     public static ColonySnapshot Sample(Map map, Faction raider)
     {
+        var history = AdaptiveHostilesComponent.Instance?.History;
+        var factionName = raider.def.defName;
         var colonists = map.mapPawns.FreeColonistsSpawned;
         var combatReady = 0;
         var ranged = 0;
@@ -40,6 +42,7 @@ public static class ColonySampler
             injured,
             raider.def.defName,
             raider.def.techLevel.ToString(),
-            RecentFailedRaids: 0); // TODO: persisted raid_history
+            history?.RecentFailed(factionName) ?? 0,
+            history?.RecentSucceeded(factionName) ?? 0);
     }
 }

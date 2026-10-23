@@ -90,7 +90,22 @@ public sealed class RaidPlanner(IJevClient? client = null)
             < 20 => RaidScale.Assault,
             _ => RaidScale.Invasion
         };
+        scale = Adapt(scale, s.RecentFailedRaids, s.RecentSuccessfulRaids);
         return new RaidPlan(scale, RaidApproach.Direct, PawnCountFor(scale, s.ColonistCount), elite, false);
+    }
+
+    /// <summary>
+    /// Raid memory: a faction that keeps losing escalates one step, one that keeps winning backs off
+    /// one step. Never more than one step, so history cannot run away from the colony-state baseline.
+    /// </summary>
+    public static RaidScale Adapt(RaidScale scale, int recentFailed, int recentSucceeded)
+    {
+        const int Threshold = 3;
+        if (recentFailed >= Threshold && recentFailed > recentSucceeded)
+            return (RaidScale)Math.Min((int)scale + 1, (int)RaidScale.Invasion);
+        if (recentSucceeded >= Threshold && recentSucceeded > recentFailed)
+            return (RaidScale)Math.Max((int)scale - 1, (int)RaidScale.Recon);
+        return scale;
     }
 
     private static bool ParseScale(string? value, out RaidScale scale)

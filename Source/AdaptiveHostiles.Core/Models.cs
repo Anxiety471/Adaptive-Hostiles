@@ -12,7 +12,8 @@ public sealed record ColonySnapshot(
     int InjuredColonistCount,
     string FactionDefName,
     string FactionTechLevel,
-    int RecentFailedRaids);
+    int RecentFailedRaids,
+    int RecentSuccessfulRaids = 0);
 
 public enum RaidScale { Recon, Skirmish, Assault, Invasion }
 public enum RaidApproach { Direct, Flank, Breach, Siege }

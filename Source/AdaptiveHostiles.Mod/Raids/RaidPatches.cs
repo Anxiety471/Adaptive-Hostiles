@@ -62,6 +62,8 @@ public static class RaidAdapter
             pawns.Add(pawn);
         }
 
+        AdaptiveHostilesComponent.Instance?.TrackRaid(faction.def.defName, pawns, map);
+
         Log.Message($"[Adaptive Hostiles] {faction.Name} raid: {plan.Scale}/{plan.Approach}, {pawns.Count} raiders" +
                     $"{(plan.IsModelDecision ? " (Jev plan)" : " (local fallback plan)")}.");
         return true;

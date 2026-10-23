@@ -2,7 +2,7 @@
 
 **Jev-assisted hostile raids and elite pawn tactics for RimWorld.**
 
-> **Status: initial codebase / pre-alpha.** The TypeSafe API client, validated decision planners, deterministic fallbacks, unit-test harness, and RimWorld mod bootstrap are present. Live raid replacement, battlefield sampling, pawn job execution, and in-game testing are **not yet implemented**. Installing this scaffold will **not** alter raids.
+> **Status: initial codebase / pre-alpha.** The TypeSafe API client, validated decision planners, deterministic fallbacks, unit-test harness, and RimWorld mod bootstrap are present. The game-independent core (roster generator, candidate enumeration, order revalidation, operative registry, async scheduler) is also implemented and tested. The RimWorld-facing hooks (raid interception, map sampling, job assignment, save/load) and in-game testing are **not yet implemented**. Installing this scaffold will **not** alter raids.
 
 ## Design
 

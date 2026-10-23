@@ -5,8 +5,8 @@ namespace AdaptiveHostiles.Mod.Raids;
 /// <summary>
 /// Supplies a RaidPlan without ever blocking the game thread. A fresh cached Jev plan is
 /// used when present; otherwise the bounded local fallback is returned immediately and a
-/// background request warms the cache for the next raid. Without TYPESAFE_API_KEY only the
-/// fallback is used.
+/// background request warms the cache for the next raid. Which model answers is chosen by
+/// DecisionProviders (Jev, Anthropic, OpenAI-compatible); with none configured only the fallback is used.
 /// </summary>
 public static class JevPlanService
 {
@@ -20,9 +20,9 @@ public static class JevPlanService
 
     private static RaidPlanner? CreateRemote()
     {
-        var key = Environment.GetEnvironmentVariable("TYPESAFE_API_KEY");
-        if (string.IsNullOrWhiteSpace(key)) return null;
-        return new RaidPlanner(new JevClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }, key));
+        var client = DecisionProviders.Create(
+            new HttpClient { Timeout = TimeSpan.FromSeconds(10) }, Environment.GetEnvironmentVariable);
+        return client is null ? null : new RaidPlanner(client);
     }
 
     public static bool JevEnabled => Remote is not null;

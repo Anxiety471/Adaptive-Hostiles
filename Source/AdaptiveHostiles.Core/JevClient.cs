@@ -52,7 +52,7 @@ public interface IJevClient
         object state, IReadOnlyDictionary<string, object> questions, CancellationToken cancellationToken);
 }
 
-internal static class JevAnswers
+public static class JevAnswers
 {
     public static string? Choice(JsonElement root, string name)
     {

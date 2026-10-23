@@ -85,6 +85,45 @@ await Check("official API client sends typed schema to correct endpoint", async 
     Require(body.RootElement.GetProperty("questions").TryGetProperty("safe", out _), "missing questions");
 });
 
+await Check("anthropic client sends headers and only accepts listed choices", async () =>
+{
+    var h = new StubHandler("""{"content":[{"type":"text","text":"```json\n{\"scale\":\"assault\",\"approach\":\"teleport\"}\n```"}]}""");
+    using var http = new HttpClient(h);
+    using var r = await new AnthropicClient(http, "k").DecideAsync(new { w = 1 }, Questions(), CancellationToken.None);
+    Require(h.Uri == AnthropicClient.OfficialEndpoint && h.Headers["x-api-key"] == "k", "wrong endpoint/key header");
+    Require(JevAnswers.Choice(r.RootElement, "scale") == "assault", "valid choice lost");
+    Require(JevAnswers.Choice(r.RootElement, "approach") is null, "unlisted choice accepted");
+});
+
+await Check("openai-compatible client uses custom base url and tolerates no key", async () =>
+{
+    var h = new StubHandler("""{"choices":[{"message":{"content":"{\"scale\":\"recon\"}"}}]}""");
+    using var http = new HttpClient(h);
+    using var r = await new OpenAiCompatibleClient(http, null, "http://localhost:11434/v1/", "llama").DecideAsync(
+        new { w = 1 }, Questions(), CancellationToken.None);
+    Require(h.Uri == "http://localhost:11434/v1/chat/completions" && h.Headers["auth"] == "", "wrong url/auth");
+    Require(JevAnswers.Choice(r.RootElement, "scale") == "recon", "choice lost");
+    var garbage = new StubHandler("""{"choices":[{"message":{"content":"I refuse"}}]}""");
+    using var g = await new OpenAiCompatibleClient(new HttpClient(garbage), "k").DecideAsync(
+        new { w = 1 }, Questions(), CancellationToken.None);
+    Require(JevAnswers.Choice(g.RootElement, "scale") is null, "garbage produced a choice");
+});
+
+await Check("provider selection follows env and falls back to local", async () =>
+{
+    using var http = new HttpClient();
+    IJevClient? Pick(params (string, string)[] env) =>
+        DecisionProviders.Create(http, k => env.Where(e => e.Item1 == k).Select(e => e.Item2).FirstOrDefault());
+    Require(Pick() is null, "no keys should mean local fallback");
+    Require(Pick(("TYPESAFE_API_KEY", "a"), ("ANTHROPIC_API_KEY", "b")) is JevClient, "auto should prefer Jev");
+    Require(Pick(("ANTHROPIC_API_KEY", "b")) is AnthropicClient, "auto should use Anthropic");
+    Require(Pick(("TYPESAFE_API_KEY", "a"), ("ANTHROPIC_API_KEY", "b"), ("ADAPTIVE_HOSTILES_PROVIDER", "claude")) is AnthropicClient, "explicit provider ignored");
+    Require(Pick(("ADAPTIVE_HOSTILES_PROVIDER", "openai"), ("ADAPTIVE_HOSTILES_ENDPOINT", "http://localhost:1/v1")) is OpenAiCompatibleClient, "keyless local endpoint");
+    Require(Pick(("TYPESAFE_API_KEY", "a"), ("ADAPTIVE_HOSTILES_PROVIDER", "local")) is null, "local must disable remote");
+    Require(Pick(("ADAPTIVE_HOSTILES_PROVIDER", "anthropic")) is null, "missing key must fall back");
+    await Task.CompletedTask;
+});
+
 await Check("roster is independent of raid points, deterministic and bounded", async () =>
 {
     var plan = new RaidPlan(RaidScale.Invasion, RaidApproach.Breach, 12, true, true);
@@ -267,6 +306,12 @@ static void Require(bool condition, string message)
     if (!condition) throw new Exception(message);
 }
 
+static Dictionary<string, object> Questions() => new()
+{
+    ["scale"] = new { type = "choice", instructions = "size?", criteria = new Dictionary<string, string> { ["recon"] = "s", ["assault"] = "l" } },
+    ["approach"] = new { type = "choice", instructions = "how?", criteria = new Dictionary<string, string> { ["direct"] = "d" } }
+};
+
 static ColonySnapshot Colony() => new(
     TotalWealth: 175000, ColonistCount: 11, CombatReadyCount: 8,
     EquippedRangedWeapons: 7, TurretCount: 2, DefensiveStructureCount: 30,
@@ -326,4 +371,21 @@ sealed class GridMap : ITacticalMap
     public bool IsReachable(int x, int z) => Open;
     public float CoverAt(int x, int z) => (x % 3) / 2f;
     public float ExposureAt(int x, int z) => (z % 4) / 4f;
+}
+
+sealed class StubHandler(string body) : HttpMessageHandler
+{
+    public string? Uri { get; private set; }
+    public Dictionary<string, string> Headers { get; } = new();
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+    {
+        Uri = request.RequestUri?.ToString();
+        foreach (var h in request.Headers.NonValidated) Headers[h.Key] = h.Value.ToString();
+        Headers["auth"] = request.Headers.Authorization?.ToString() ?? "";
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
+        });
+    }
 }

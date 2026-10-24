@@ -40,6 +40,10 @@ public static class OperativeJobExecutor
             go.checkOverrideOnExpire = true;
             Start(pawn, go, state);
             state.Destination = dest;
+            // A melee raider pushing a breach point of a sealed base has to break the wall or door in its way.
+            if (order.Reason.StartsWith("breach_", StringComparison.Ordinal) && order.Stance != TacticalStance.Withdraw &&
+                IsMelee(pawn) && WallBreaker.TryFindBlocker(pawn, out var wall))
+                pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, wall));
             if (target != null && order.Stance != TacticalStance.Withdraw)
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, target));
             // Never leave the queue empty: when it runs out vanilla assault AI would walk the raider elsewhere.
@@ -101,11 +105,13 @@ public static class OperativeJobExecutor
 
     private static Job MakeAttack(Pawn pawn, Thing target)
     {
-        var melee = pawn.equipment?.Primary == null || pawn.equipment.Primary.def.IsMeleeWeapon;
+        var melee = IsMelee(pawn);
         var job = JobMaker.MakeJob(melee ? JobDefOf.AttackMelee : JobDefOf.AttackStatic, target);
         job.expiryInterval = 600;
         return job;
     }
+
+    private static bool IsMelee(Pawn pawn) => pawn.equipment?.Primary == null || pawn.equipment.Primary.def.IsMeleeWeapon;
 
     private static bool CanAttackFromHere(Pawn pawn, Thing target)
     {

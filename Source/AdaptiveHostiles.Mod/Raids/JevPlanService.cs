@@ -1,4 +1,5 @@
 using AdaptiveHostiles.Core;
+using AdaptiveHostiles.Mod;
 
 namespace AdaptiveHostiles.Mod.Raids;
 
@@ -24,7 +25,8 @@ public static class JevPlanService
     private static IJevClient? CreateClient()
     {
         return DecisionProviders.Create(
-            new HttpClient { Timeout = TimeSpan.FromSeconds(10) }, Environment.GetEnvironmentVariable);
+            new HttpClient { Timeout = TimeSpan.FromSeconds(10) },
+            AdaptiveHostilesMod.Providers.ToLookup(Environment.GetEnvironmentVariable));
     }
 
     public static bool JevEnabled => Remote is not null;

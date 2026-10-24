@@ -5,6 +5,9 @@ namespace AdaptiveHostiles.Core;
 
 public enum SquadTactic { FocusFire, Flank, SuppressAndPush, Regroup }
 
+/// <summary>Gather at staging cells and hold; Breach on the go signal with melee in front; Press the assault.</summary>
+public enum SquadPhase { Gather, Breach, Press }
+
 /// <summary>One controllable raider as sampled on the game thread; the Operative is flagged.</summary>
 public sealed record SquadMember(OperativeSnapshot Snapshot, bool IsOperative, bool IsMelee = false);
 
@@ -16,7 +19,8 @@ public sealed record BreachPoint(string Id, int X, int Z, float Weakness, int De
 
 public sealed record SquadSnapshot(
     string SquadId, IReadOnlyList<SquadMember> Members, int Sent, int Down, int Retreated,
-    IReadOnlyList<BreachPoint>? BreachPoints = null)
+    IReadOnlyList<BreachPoint>? BreachPoints = null,
+    SquadPhase PreviousPhase = SquadPhase.Gather, int GatherCycles = 0)
 {
     public IReadOnlyList<BreachPoint> Breaches => BreachPoints ?? Array.Empty<BreachPoint>();
 
@@ -35,7 +39,7 @@ public sealed record SquadSnapshot(
 public sealed record SquadDecision(
     SquadTactic Tactic, string? FocusTargetId,
     IReadOnlyDictionary<string, OperativeDecision> Members, bool IsModelDecision,
-    string? BreachId = null);
+    string? BreachId = null, SquadPhase Phase = SquadPhase.Breach);
 
 /// <summary>
 /// One model call per squad per cycle. Jev sees every member's exact candidate cells and answers a
@@ -48,7 +52,16 @@ public sealed class SquadPlanner(IJevClient? client = null)
     public const int MaxDestinationsPerMember = 12;
     public const int MaxTargets = 16;
 
-    public async Task<SquadDecision> DecideAsync(SquadSnapshot squad, CancellationToken cancellationToken = default)
+    /// <summary>Raiders count as gathered when this fraction stands at their staging cell.</summary>
+    public const double ReadyFraction = 0.75;
+    public const float StagedWithin = 4f;
+    /// <summary>After this many gather cycles the squad goes anyway, so a blocked member cannot stall the raid.</summary>
+    public const int MaxGatherCycles = 4;
+
+    public async Task<SquadDecision> DecideAsync(SquadSnapshot squad, CancellationToken cancellationToken = default) =>
+        Sync(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad);
+
+    private async Task<SquadDecision> DecideCoreAsync(SquadSnapshot squad, CancellationToken cancellationToken)
     {
         var members = squad.Members
             .OrderByDescending(m => m.IsOperative)
@@ -90,6 +103,19 @@ public sealed class SquadPlanner(IJevClient? client = null)
             {                type = "choice",
                 instructions = "Pick where the whole squad breaks through. Choose the weakest point of the colony's defence (fewest defenders and turrets covering it), never the open kill zone in front of the defenders. Melee raiders will push this point and ranged raiders will support it from behind, together.",
                 criteria = BreachOptions(squad.Breaches)
+            };
+
+        if (squad.Breaches.Count > 0)
+            questions["phase"] = new
+            {
+                type = "choice",
+                instructions = "Choose the assault phase. The squad must not attack piecemeal: gather everyone at the staging cells first, then go together. Pick gather until most raiders are staged; breach to send melee through the breach point with ranged support behind; press once the breach is open.",
+                criteria = new Dictionary<string, string>
+                {
+                    ["gather"] = "Everyone moves to the staging cell and holds. Nobody attacks until the go signal.",
+                    ["breach"] = "Go signal: melee push through the breach, ranged support from behind, together.",
+                    ["press"] = "The breach is open: the whole squad presses the attack."
+                }
             };
 
         for (var i = 0; i < members.Count; i++)
@@ -152,6 +178,12 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 (breach is null || (breach != "none" && squad.Breaches.All(b => b.Id != breach))))
                 return fallback;
             var breachId = breach is null or "none" ? null : breach;
+            var phase = JevAnswers.Choice(root, "phase") switch
+            {
+                "gather" => SquadPhase.Gather,
+                "press" => SquadPhase.Press,
+                _ => SquadPhase.Breach
+            };
             var focusId = focus == "none" ? null : focus;
 
             var decisions = new Dictionary<string, OperativeDecision>(StringComparer.Ordinal);
@@ -174,7 +206,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 if (!valid && chosen.DestinationId != "hold") taken.Add(chosen.DestinationId);
                 decisions[id] = chosen;
             }
-            return new SquadDecision(tactic, focusId, decisions, true, breachId);
+            return new SquadDecision(tactic, focusId, decisions, true, breachId, phase);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return fallback; }
         catch (HttpRequestException) { return fallback; }
@@ -190,12 +222,52 @@ public sealed class SquadPlanner(IJevClient? client = null)
         _ => null
     };
 
+    private static MovementCandidate? StageCell(SquadMember m, string breachId) =>
+        m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "stage_" + breachId);
+
+    /// <summary>
+    /// The go signal. Breach and Press are only allowed once enough raiders stand at their staging cells
+    /// (or the squad already went, or waited too long); until then everyone gathers and holds.
+    /// </summary>
+    private static SquadDecision Sync(SquadDecision decision, SquadSnapshot squad)
+    {
+        var breachId = decision.BreachId;
+        if (breachId is null || squad.Breaches.Count == 0) return decision with { Phase = decision.Phase == SquadPhase.Gather ? SquadPhase.Breach : decision.Phase };
+
+        var staged = 0;
+        foreach (var m in squad.Members)
+        {
+            var cell = StageCell(m, breachId);
+            var dx = cell is null ? 0 : m.Snapshot.X - cell.X;
+            var dz = cell is null ? 0 : m.Snapshot.Z - cell.Z;
+            if (cell is null || Math.Sqrt(dx * dx + dz * dz) <= StagedWithin) staged++;
+        }
+        var ready = squad.Members.Count == 0 || staged >= Math.Ceiling(squad.Members.Count * ReadyFraction)
+                    || squad.PreviousPhase != SquadPhase.Gather || squad.GatherCycles >= MaxGatherCycles;
+        var phase = ready ? (decision.Phase == SquadPhase.Gather ? SquadPhase.Breach : decision.Phase) : SquadPhase.Gather;
+        if (phase != SquadPhase.Gather) return decision with { Phase = phase };
+
+        // Gathering: every healthy raider goes to its staging cell and holds fire discipline until the signal.
+        var held = new Dictionary<string, OperativeDecision>(StringComparer.Ordinal);
+        foreach (var m in squad.Members)
+        {
+            if (!decision.Members.TryGetValue(m.Snapshot.PawnId, out var d)) continue;
+            var stage = StageCell(m, breachId);
+            held[m.Snapshot.PawnId] = d.Stance is TacticalStance.Withdraw or TacticalStance.Flee || stage is null
+                ? d
+                : d with { DestinationId = stage.Id, Stance = TacticalStance.Defensive };
+        }
+        return decision with { Phase = SquadPhase.Gather, Members = held };
+    }
+
     /// <summary>
     /// Role cells are named "breach_{id}" (melee push) and "support_{id}" (ranged backup). Everyone must use
     /// the cells of the chosen breach point, and ranged raiders may not take the melee front.
     /// </summary>
     private static bool RoleAllows(bool isMelee, string purpose, string? breachId)
     {
+        if (purpose.StartsWith("stage_", StringComparison.Ordinal))
+            return breachId is not null && purpose.EndsWith("_" + breachId, StringComparison.Ordinal);
         if (purpose.StartsWith("breach_", StringComparison.Ordinal) || purpose.StartsWith("support_", StringComparison.Ordinal))
         {
             if (breachId is null || !purpose.EndsWith("_" + breachId, StringComparison.Ordinal)) return false;

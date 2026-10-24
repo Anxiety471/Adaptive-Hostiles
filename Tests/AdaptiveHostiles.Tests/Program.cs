@@ -529,6 +529,40 @@ await Check("squad: melee push the weakest breach, ranged support behind it, in 
     await Task.CompletedTask;
 });
 
+await Check("squad: raiders gather at staging cells and only go together on the signal", async () =>
+{
+    var far = StagedSquad(arrived: false);
+    var d = await new SquadPlanner().DecideAsync(far);
+    Require(d.Phase == SquadPhase.Gather, "attacked before gathering");
+    Require(d.Members["m1"].DestinationId == "cell_stage_m1" && d.Members["r1"].DestinationId == "cell_stage_r1", "not sent to staging cells");
+    Require(d.Members.Values.All(m => m.Stance == TacticalStance.Defensive), "attacked while gathering");
+
+    var go = await new SquadPlanner().DecideAsync(StagedSquad(arrived: true));
+    Require(go.Phase == SquadPhase.Breach && go.Members["m1"].DestinationId == "cell_push", "no go signal once staged");
+
+    var impatient = await new SquadPlanner(new FakeClient("""
+        {"answers":{"tactic":{"type":"choice","choice":"flank"},"focus":{"type":"choice","choice":"pawn_1"},"breach":{"type":"choice","choice":"B1"},"phase":{"type":"choice","choice":"press"},
+        "move_0":{"type":"choice","choice":"cell_push"},"stance_0":{"type":"choice","choice":"aggressive"},
+        "move_1":{"type":"choice","choice":"cell_support"},"stance_1":{"type":"choice","choice":"aggressive"}}}
+        """)).DecideAsync(far);
+    Require(impatient.Phase == SquadPhase.Gather && impatient.Members["m1"].DestinationId == "cell_stage_m1", "model overrode the gather gate");
+
+    Require((await new SquadPlanner().DecideAsync(far with { GatherCycles = SquadPlanner.MaxGatherCycles })).Phase == SquadPhase.Breach, "gather never times out");
+    Require((await new SquadPlanner().DecideAsync(far with { PreviousPhase = SquadPhase.Breach })).Phase == SquadPhase.Breach, "went back to gathering mid-assault");
+});
+
+await Check("squad loop: remembers the phase between cycles", async () =>
+{
+    var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());
+    var host = new FakeSquadHost { Snapshot = StagedSquad(arrived: false) };
+    loop.Tick("s", host, 100, 1);
+    Require(host.Applied[0].Order.X == 100, "gather order not applied");
+    host.Snapshot = StagedSquad(arrived: true);
+    loop.Tick("s", host, 1000, 1);
+    Require(host.Applied.Last().Order.X != 100 && host.Applied.Last().Id.Length > 0, "go signal not applied");
+    await Task.CompletedTask;
+});
+
 await Check("squad loop: one sample and one resolve per member, cooldown honoured", async () =>
 {
     var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());
@@ -648,6 +682,20 @@ static SquadSnapshot BreachSquad()
         C("cell_b1_push", "breach_B1", 150), C("cell_free2", "cover", 132));
     return new SquadSnapshot("s", new[] { new SquadMember(melee, false, true), new SquadMember(ranged, false, false) }, 2, 0, 0,
         new[] { new BreachPoint("B1", 150, 90, 0.2f, 4, 1), new BreachPoint("B2", 160, 90, 0.9f, 0, 0) });
+}
+
+static SquadSnapshot StagedSquad(bool arrived)
+{
+    MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
+    var tgt = new[] { new TargetCandidate("pawn_1", 145, 86, 0.8f, true) };
+    OperativeSnapshot Snap(string id, string role, int stageX, int pushX) =>
+        new(id, arrived ? stageX : 40, 90, 1f, "x", 2,
+            new[] { C($"cell_stage_{id}", "stage_B1", stageX), C(role == "melee" ? "cell_push" : "cell_support", role == "melee" ? "breach_B1" : "support_B1", pushX) },
+            tgt);
+    var m = Snap("m1", "melee", 100, 150);
+    var r = Snap("r1", "ranged", 101, 140);
+    return new SquadSnapshot("s", new[] { new SquadMember(m, false, true), new SquadMember(r, false, false) }, 2, 0, 0,
+        new[] { new BreachPoint("B1", 150, 90, 0.9f, 0, 0) });
 }
 
 sealed class FakeClient(string json) : IJevClient

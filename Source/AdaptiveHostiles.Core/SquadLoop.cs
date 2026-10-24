@@ -26,6 +26,7 @@ public sealed class SquadLoop
     private readonly AdaptiveHostilesSettings _settings;
     private readonly TimeSpan _maxResultAge;
     private readonly Dictionary<string, (SquadSnapshot Offered, long Tick)> _pending = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (SquadPhase Phase, int GatherCycles)> _phase = new(StringComparer.Ordinal);
 
     public SquadLoop(SquadPlanner planner, JevScheduler<SquadDecision>? scheduler, AdaptiveHostilesSettings settings)
     {
@@ -37,11 +38,16 @@ public sealed class SquadLoop
 
     public bool HasPending(string squadId) => _pending.ContainsKey(squadId);
 
-    public void Forget(string squadId) => _pending.Remove(squadId);
+    public void Forget(string squadId)
+    {
+        _pending.Remove(squadId);
+        _phase.Remove(squadId);
+    }
 
     public void Reset()
     {
         _pending.Clear();
+        _phase.Clear();
         _scheduler?.Reset();
     }
 
@@ -53,7 +59,7 @@ public sealed class SquadLoop
             if (_scheduler!.TryTake(squadId, _maxResultAge, out var decision))
             {
                 _pending.Remove(squadId);
-                Finish(host, decision, pending.Offered, tick, seed);
+                Finish(squadId, host, decision, pending.Offered, tick, seed);
             }
             else if (tick - pending.Tick > (long)(_settings.NetworkDeadline.TotalSeconds * 60) + 120)
             {
@@ -67,10 +73,12 @@ public sealed class SquadLoop
 
         var snapshot = host.Sample();
         if (snapshot.Members.Count == 0) return;
+        if (_phase.TryGetValue(squadId, out var known))
+            snapshot = snapshot with { PreviousPhase = known.Phase, GatherCycles = known.GatherCycles };
         if (_scheduler is null)
         {
             var local = _planner.DecideAsync(snapshot).GetAwaiter().GetResult();
-            Finish(host, local, snapshot, tick, seed);
+            Finish(squadId, host, local, snapshot, tick, seed);
         }
         else if (_scheduler.TryBegin(squadId, ct => _planner.DecideAsync(snapshot, ct)))
         {
@@ -78,7 +86,7 @@ public sealed class SquadLoop
         }
     }
 
-    private void Finish(ISquadHost host, SquadDecision decision, SquadSnapshot offered, long tick, ulong seed)
+    private void Finish(string squadId, ISquadHost host, SquadDecision decision, SquadSnapshot offered, long tick, ulong seed)
     {
         foreach (var member in offered.Members)
         {
@@ -89,6 +97,8 @@ public sealed class SquadLoop
                 member.IsOperative ? host.RecordOf(id) : null, tick, canFlee: !member.IsOperative);
             host.Apply(id, order);
         }
+        var cycles = decision.Phase == SquadPhase.Gather && _phase.TryGetValue(squadId, out var prior) ? prior.GatherCycles + 1 : 0;
+        _phase[squadId] = (decision.Phase, cycles);
         OperativeRegistry.ScheduleNext(host.Timing, tick, seed, _settings);
     }
 }

@@ -12,6 +12,7 @@ namespace AdaptiveHostiles.Mod.Tactics;
 public static class BreachFinder
 {
     public const int MaxPoints = 3;
+    private const float StageDistance = 16f;
     private const float MaxDefenderDistance = 20f;
     private const float DefenderSightRange = 25f;
     private static readonly int[] Radii = { 6, 10, 14, 18 };
@@ -82,16 +83,29 @@ public static class BreachFinder
                 anchorZ = bp.Z + (int)Math.Round(dz / len * back);
             }
 
-            var cell = FindCell(map, anchorX, anchorZ, slot, used);
-            if (cell is null) continue;
-            used.Add(cell.Value);
-            var (x, z) = cell.Value;
-            result.Add(new MovementCandidate(
-                CandidateEnumerator.IdFor(x, z), x, z, map.CoverAt(x, z), map.ExposureAt(x, z),
-                (float)new IntVec3(x, 0, z).DistanceTo(pawn.Position),
-                (isMelee ? "breach_" : "support_") + bp.Id, true, map.InTurretRange(x, z)));
+            Add(result, pawn, map, FindCell(map, anchorX, anchorZ, slot, used), (isMelee ? "breach_" : "support_") + bp.Id, used);
+
+            // Staging cell: further out on the raiders' side, where the squad gathers until the go signal.
+            var sx = bp.X - centre.x;
+            var sz = bp.Z - centre.z;
+            var slen = Math.Max(1f, (float)Math.Sqrt(sx * sx + sz * sz));
+            Add(result, pawn, map,
+                FindCell(map, bp.X + (int)Math.Round(sx / slen * StageDistance), bp.Z + (int)Math.Round(sz / slen * StageDistance), slot, used),
+                "stage_" + bp.Id, used);
         }
         return result;
+    }
+
+    private static void Add(
+        List<MovementCandidate> result, Pawn pawn, RimWorldTacticalMap map, (int, int)? cell, string purpose,
+        HashSet<(int, int)> used)
+    {
+        if (cell is null) return;
+        used.Add(cell.Value);
+        var (x, z) = cell.Value;
+        result.Add(new MovementCandidate(
+            CandidateEnumerator.IdFor(x, z), x, z, map.CoverAt(x, z), map.ExposureAt(x, z),
+            (float)new IntVec3(x, 0, z).DistanceTo(pawn.Position), purpose, true, map.InTurretRange(x, z)));
     }
 
     // Nearest free standable, reachable cell around the anchor; slot rotates the search so members spread.

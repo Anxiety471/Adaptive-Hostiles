@@ -78,7 +78,7 @@ public static class OperativeDriver
                 if (health < state.LastHealth - 0.05f) trigger |= TacticalTrigger.Damaged;
                 state.LastHealth = health;
 
-                if (state.Target is { Dead: true } or { Downed: true } or { Spawned: false })
+                if (state.Target is { Destroyed: true } or { Spawned: false } or Pawn { Dead: true } or Pawn { Downed: true })
                 {
                     trigger |= TacticalTrigger.TargetLost;
                     state.Target = null;

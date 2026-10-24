@@ -480,6 +480,26 @@ await Check("squad: model withdraw/flee for healthy raiders is kept aggressive",
     await Task.CompletedTask;
 });
 
+await Check("turret range is flagged, penalised, and shown to the model", async () =>
+{
+    var list = CandidateEnumerator.Enumerate(new TurretMap(), 50, 50, new[] { (60, 50) });
+    Require(list.Any(c => c.InTurretRange) && list.Any(c => !c.InTurretRange), "turret flag missing");
+    var covered = new MovementCandidate("a", 1, 1, 0.9f, 0f, 5, "firing_position", true, InTurretRange: true);
+    var safer = new MovementCandidate("b", 2, 2, 0.6f, 0f, 5, "firing_position", true);
+    Require(TacticalHeuristics.PickDestination(new[] { covered, safer }, TacticalStance.Aggressive, 0)!.Id == "b", "walked into turret fire");
+    var client = new FakeClient("""
+        {"answers":{"movement":{"type":"choice","choice":"hold"},"target":{"type":"choice","choice":"turret_1"},"stance":{"type":"choice","choice":"aggressive"}}}
+        """);
+    var snap = Battlefield() with
+    {
+        Destinations = new[] { covered },
+        Targets = new[] { new TargetCandidate("turret_1", 140, 90, 0.9f, true, "turret", 30) }
+    };
+    var d = await new OperativePlanner(client).DecideAsync(snap);
+    Require(d.TargetId == "turret_1", "turret not targetable");
+    Require(JsonSerializer.Serialize(client.LastQuestions).Contains("HOSTILE TURRET"), "turret range not shown to model");
+});
+
 await Check("squad loop: one sample and one resolve per member, cooldown honoured", async () =>
 {
     var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());
@@ -624,6 +644,15 @@ sealed class CaptureHandler : HttpMessageHandler
                 """, Encoding.UTF8, "application/json")
         };
     }
+}
+
+sealed class TurretMap : ITacticalMap
+{
+    public bool IsStandable(int x, int z) => true;
+    public bool IsReachable(int x, int z) => true;
+    public float CoverAt(int x, int z) => 0.5f;
+    public float ExposureAt(int x, int z) => 0.2f;
+    public bool InTurretRange(int x, int z) => x > 50;
 }
 
 sealed class GridMap : ITacticalMap

@@ -80,6 +80,13 @@ A raid that contains an Operative is commanded as one squad by Jev, not only the
 - A member whose answer is invalid, or whose cell another member already took, uses the local heuristic for that member only. A wholly invalid squad answer uses the local squad fallback.
 - Members beyond the cap, blocked, downed or in a Jev-ordered exit are left to their current job / vanilla AI.
 
+### Turrets and engagement
+
+- Hostile powered turrets are part of the battlefield: they are offered as visible targets (kind `turret`, with range) and candidate cells inside their range are flagged and penalised, so Jev can focus a turret or stay out of its fire.
+- Squad members with no enemy pawn or turret within the scan radius (60 cells) are left to vanilla assault AI so they keep marching on the colony; the squad only commands engaged raiders.
+- Squad cadence is slower than the lone Operative: 360–600 tick cooldown and 360 tick commitment, so orders are not replaced mid-walk.
+- Every member must get a distinct destination.
+
 ### Aggression and survival
 
 - Default posture is aggressive: press the attack from the best-covered firing position, advance or flank cell; spread members over different approaches and focus fire.

@@ -80,7 +80,7 @@ public static class OperativeJobExecutor
         state.Target = null;
     }
 
-    private static Job MakeAttack(Pawn pawn, Pawn target)
+    private static Job MakeAttack(Pawn pawn, Thing target)
     {
         var melee = pawn.equipment?.Primary == null || pawn.equipment.Primary.def.IsMeleeWeapon;
         var job = JobMaker.MakeJob(melee ? JobDefOf.AttackMelee : JobDefOf.AttackStatic, target);
@@ -88,14 +88,14 @@ public static class OperativeJobExecutor
         return job;
     }
 
-    private static bool CanAttackFromHere(Pawn pawn, Pawn target)
+    private static bool CanAttackFromHere(Pawn pawn, Thing target)
     {
         var verb = pawn.equipment?.PrimaryEq?.PrimaryVerb;
         return verb == null ? pawn.Position.AdjacentTo8WayOrInside(target.Position) : verb.CanHitTarget(target);
     }
 
-    /// <summary>Maps an offered target ID back to a live hostile pawn; anything else is rejected.</summary>
-    private static Pawn? ResolveTarget(Pawn self, string? targetId)
+    /// <summary>Maps an offered target ID back to a live hostile pawn or turret; anything else is rejected.</summary>
+    private static Thing? ResolveTarget(Pawn self, string? targetId)
     {
         if (targetId is null) return null;
         foreach (var p in self.Map.mapPawns.AllPawnsSpawned)
@@ -104,6 +104,8 @@ public static class OperativeJobExecutor
             if (p.Dead || p.Downed || p.Faction is null || !self.Faction.HostileTo(p.Faction)) return null;
             return p;
         }
+        foreach (var t in OperativeSampler.HostileTurrets(self))
+            if (OperativeSampler.TargetIdFor(t) == targetId) return t;
         return null;
     }
 }
@@ -113,7 +115,7 @@ public sealed class OperativeRuntimeState
 {
     public Job? Job;
     public IntVec3? Destination;
-    public Pawn? Target;
+    public Thing? Target;
     public float LastHealth = 1f;
     public bool HadVisibleTarget;
     /// <summary>True while a Jev-ordered exit job is running; the pawn is left alone until it ends.</summary>

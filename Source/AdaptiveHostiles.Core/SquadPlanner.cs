@@ -82,7 +82,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
             questions[$"move_{i}"] = new
             {
                 type = "choice",
-                instructions = $"Destination for member {i} ({role}). Coordinate with the others: spread over different approaches, do not share a cell, use cover, and match the squad plan. Only select a listed ID.",
+                instructions = $"Destination for member {i} ({role}). Coordinate with the others: every member MUST get a different destination, spread over different approaches, use cover, and match the squad plan. Only select a listed ID.",
                 criteria = MoveOptions(m.Moves)
             };
             var stances = new Dictionary<string, string>
@@ -170,7 +170,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
     {
         var o = new Dictionary<string, string> { ["none"] = "No focus target." };
         foreach (var t in targets.Values)
-            o[t.Id] = $"Visible colonist at ({t.X},{t.Z}), threat {t.Threat:0.00}.";
+            o[t.Id] = $"Visible {(t.Kind == "turret" ? $"turret (range {t.Range:0})" : "colonist")} at ({t.X},{t.Z}), threat {t.Threat:0.00}.";
         return o;
     }
 
@@ -178,7 +178,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
     {
         var o = new Dictionary<string, string> { ["hold"] = "Remain at the current cell." };
         foreach (var c in moves.Values)
-            o[c.Id] = $"Go to cell ({c.X},{c.Z}), {c.Purpose}; cover {c.Cover:0.00}, exposure {c.Exposure:0.00}, distance {c.Distance:0.0}.";
+            o[c.Id] = $"Go to cell ({c.X},{c.Z}), {c.Purpose}; cover {c.Cover:0.00}, exposure {c.Exposure:0.00}, distance {c.Distance:0.0}{(c.InTurretRange ? ", IN RANGE OF A HOSTILE TURRET (avoid unless attacking it)" : "")}.";
         return o;
     }
 

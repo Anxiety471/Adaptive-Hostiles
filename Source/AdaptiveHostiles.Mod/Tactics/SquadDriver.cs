@@ -18,7 +18,13 @@ public static class SquadDriver
     /// <summary>After this long the vanilla exit logic is allowed again so a raid can never hang forever.</summary>
     private const int MaxSuppressTicks = 30000;
 
-    private static readonly AdaptiveHostilesSettings Settings = RaidAdapter.Settings;
+    // Longer cooldown and commitment than a lone Operative so raiders reach their cells before the next order.
+    private static readonly AdaptiveHostilesSettings Settings = RaidAdapter.Settings with
+    {
+        MinDecisionCooldownTicks = 360,
+        MaxDecisionCooldownTicks = 600,
+        MinCommitmentTicks = 360
+    };
     private static readonly SquadLoop Loop = new(
         new SquadPlanner(JevPlanService.SharedClient),
         JevPlanService.SharedClient is null ? null : new JevScheduler<SquadDecision>(Settings, d => d.IsModelDecision),
@@ -132,7 +138,9 @@ public static class SquadDriver
 
         public SquadSnapshot Sample()
         {
+            // Raiders with no enemy in range stay on vanilla assault AI so they keep marching on the colony.
             var ready = members.Where(p => BlockOf(p.ThingID) == PawnBlock.None)
+                .Where(p => OperativeSampler.HostilePawns(p).Count > 0 || OperativeSampler.HostileTurrets(p).Count > 0)
                 .Select(p => (Pawn: p, IsOp: registry.TryGet(p.ThingID, out _),
                     Dist: OperativeSampler.HostilePawns(p).FirstOrDefault()?.Position.DistanceTo(p.Position) ?? float.MaxValue))
                 .OrderByDescending(x => x.IsOp).ThenBy(x => x.Dist)

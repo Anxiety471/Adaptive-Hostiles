@@ -33,14 +33,17 @@ public sealed record MovementCandidate(
     float Exposure,
     float Distance,
     string Purpose,
-    bool Reachable);
+    bool Reachable,
+    bool InTurretRange = false);
 
 public sealed record TargetCandidate(
     string Id,
     int X,
     int Z,
     float Threat,
-    bool Visible);
+    bool Visible,
+    string Kind = "pawn",
+    float Range = 0);
 
 public sealed record OperativeSnapshot(
     string PawnId,

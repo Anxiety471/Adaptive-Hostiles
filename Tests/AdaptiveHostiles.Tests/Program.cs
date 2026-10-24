@@ -390,6 +390,132 @@ await Check("tactical loop: lost request times out and replans", async () =>
     await Task.CompletedTask;
 });
 
+
+await Check("operative fallback is aggressive, takes cover, and withdraws only when badly hurt", async () =>
+{
+    var healthy = await new OperativePlanner().DecideAsync(Battlefield());
+    Require(healthy.Stance == TacticalStance.Aggressive && healthy.DestinationId == "cover_142_87", "healthy operative not aggressive");
+    var hurt = await new OperativePlanner().DecideAsync(Battlefield() with { HealthFraction = 0.2f });
+    Require(hurt.Stance == TacticalStance.Withdraw, "hurt operative kept charging");
+    Require(TacticalHeuristics.StanceFor(0.1f, canFlee: false, lossFraction: 1) == TacticalStance.Withdraw, "operative may flee");
+    Require(TacticalHeuristics.StanceFor(0.1f, canFlee: true, lossFraction: 0.1) == TacticalStance.Withdraw, "fled with squad winning");
+    Require(TacticalHeuristics.StanceFor(0.1f, canFlee: true, lossFraction: 0.6) == TacticalStance.Flee, "no flee when losing");
+    await Task.CompletedTask;
+});
+
+await Check("operative can never be ordered to flee, raiders can", async () =>
+{
+    var snap = Battlefield();
+    var open = new GridMap { Open = true };
+    var flee = new OperativeDecision("hold", null, TacticalStance.Flee, true);
+    var op = OperativeOrderResolver.Resolve(flee, snap, open, PawnBlock.None, canFlee: false);
+    Require(op.Kind != OrderKind.Flee && op.Stance == TacticalStance.Withdraw, "operative fled");
+    var raider = OperativeOrderResolver.Resolve(flee, snap, open, PawnBlock.None, canFlee: true);
+    Require(raider.Kind == OrderKind.Flee, "raider flee dropped");
+    Require(OperativeOrderResolver.Resolve(flee, snap, open, PawnBlock.Downed).Kind == OrderKind.None, "downed pawn fled");
+    await Task.CompletedTask;
+});
+
+await Check("squad: one model call returns coordinated per-member orders", async () =>
+{
+    var client = new FakeClient("""
+        {"answers":{"tactic":{"type":"choice","choice":"flank"},"focus":{"type":"choice","choice":"pawn_1"},
+        "move_0":{"type":"choice","choice":"cell_a"},"stance_0":{"type":"choice","choice":"aggressive"},
+        "move_1":{"type":"choice","choice":"cell_b"},"stance_1":{"type":"choice","choice":"flee"}}}
+        """);
+    var d = await new SquadPlanner(client).DecideAsync(Squad(raiderHealth: 0.1f, sent: 4, down: 3));
+    Require(d.IsModelDecision && d.Tactic == SquadTactic.Flank && d.FocusTargetId == "pawn_1", "squad plan lost");
+    Require(d.Members["op"].DestinationId == "cell_a" && d.Members["op"].TargetId == "pawn_1", "operative order wrong");
+    Require(d.Members["r1"].DestinationId == "cell_b" && d.Members["r1"].Stance == TacticalStance.Flee, "raider flee ignored");
+    Require(client.Calls == 1, "more than one call for the squad");
+    Require(!JsonSerializer.Serialize(client.LastQuestions!["stance_0"]).Contains("\"flee\""), "operative offered flee");
+    Require(JsonSerializer.Serialize(client.LastQuestions!["stance_1"]).Contains("\"flee\""), "raider not offered flee");
+    await Task.CompletedTask;
+});
+
+await Check("squad: operative flee answer, bad cells and shared cells fall back per member", async () =>
+{
+    var client = new FakeClient("""
+        {"answers":{"tactic":{"type":"choice","choice":"focus_fire"},"focus":{"type":"choice","choice":"pawn_1"},
+        "move_0":{"type":"choice","choice":"cell_a"},"stance_0":{"type":"choice","choice":"flee"},
+        "move_1":{"type":"choice","choice":"cell_a"},"stance_1":{"type":"choice","choice":"aggressive"}}}
+        """);
+    var d = await new SquadPlanner(client).DecideAsync(Squad());
+    Require(d.IsModelDecision, "valid tactic rejected");
+    Require(!d.Members["op"].IsModelDecision && d.Members["op"].Stance != TacticalStance.Flee, "operative flee accepted");
+    Require(d.Members["r1"].DestinationId != d.Members["op"].DestinationId, "two members sent to the same cell");
+    var bad = await new SquadPlanner(new FakeClient("""
+        {"answers":{"tactic":{"type":"choice","choice":"nuke"},"focus":{"type":"choice","choice":"pawn_1"}}}
+        """)).DecideAsync(Squad());
+    Require(!bad.IsModelDecision && bad.Members.Count == 2, "bad tactic accepted");
+    await Task.CompletedTask;
+});
+
+await Check("squad: offline fallback is aggressive, spread, and only wounded raiders flee when losing", async () =>
+{
+    var d = await new SquadPlanner().DecideAsync(Squad());
+    Require(!d.IsModelDecision && d.Members.Values.All(m => m.Stance == TacticalStance.Aggressive && m.TargetId == "pawn_1"), "fallback not aggressive focus fire");
+    Require(d.Members["op"].DestinationId != d.Members["r1"].DestinationId, "members stacked on one cell");
+    var losing = Squad(raiderHealth: 0.1f, sent: 6, down: 4);
+    var l = await new SquadPlanner().DecideAsync(losing);
+    Require(l.Members["r1"].Stance == TacticalStance.Flee, "losing wounded raider kept fighting");
+    Require(l.Members["op"].Stance != TacticalStance.Flee, "operative fled");
+    var cap = new SquadSnapshot("s", Enumerable.Range(0, 30).Select(i => Member($"r{i}", false, 1f)).ToList(), 30, 0, 0);
+    Require((await new SquadPlanner().DecideAsync(cap)).Members.Count == SquadPlanner.MaxMembers, "squad call unbounded");
+    await Task.CompletedTask;
+});
+
+await Check("squad: model withdraw/flee for healthy raiders is kept aggressive", async () =>
+{
+    var client = new FakeClient("""
+        {"answers":{"tactic":{"type":"choice","choice":"regroup"},"focus":{"type":"choice","choice":"pawn_1"},
+        "move_0":{"type":"choice","choice":"cell_a"},"stance_0":{"type":"choice","choice":"withdraw"},
+        "move_1":{"type":"choice","choice":"cell_b"},"stance_1":{"type":"choice","choice":"flee"}}}
+        """);
+    var d = await new SquadPlanner(client).DecideAsync(Squad());
+    Require(d.Members["op"].IsModelDecision && d.Members["op"].Stance == TacticalStance.Aggressive, "healthy withdraw obeyed");
+    Require(d.Members["r1"].Stance == TacticalStance.Aggressive, "healthy flee obeyed");
+    var hurt = await new SquadPlanner(client).DecideAsync(Squad(raiderHealth: 0.3f));
+    Require(hurt.Members["r1"].Stance == TacticalStance.Withdraw, "hurt raider flee not downgraded to withdraw");
+    await Task.CompletedTask;
+});
+
+await Check("squad loop: one sample and one resolve per member, cooldown honoured", async () =>
+{
+    var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());
+    var host = new FakeSquadHost { Snapshot = Squad() };
+    loop.Tick("s", host, 100, 1);
+    Require(host.Samples == 1 && host.Applied.Count == 2, "members not ordered");
+    Require(host.Applied.Any(a => a.Id == "op") && host.OperativeRecord.Log.Count == 1, "operative not logged");
+    loop.Tick("s", host, 110, 1);
+    Require(host.Samples == 1, "resampled during cooldown");
+    host.Blocked.Add("r1");
+    loop.Tick("s", host, 400, 1);
+    Require(host.Applied.Count == 4 && host.Applied[3].Order.Kind == OrderKind.None, "blocked raider interrupted");
+    await Task.CompletedTask;
+});
+
+await Check("squad loop: remote answer arrives off-thread and stale cells are dropped", async () =>
+{
+    var settings = new AdaptiveHostilesSettings();
+    var gate = new TaskCompletionSource();
+    var client = new GatedClient(gate.Task, """
+        {"answers":{"tactic":{"type":"choice","choice":"flank"},"focus":{"type":"choice","choice":"pawn_1"},
+        "move_0":{"type":"choice","choice":"cell_a"},"stance_0":{"type":"choice","choice":"aggressive"},
+        "move_1":{"type":"choice","choice":"cell_b"},"stance_1":{"type":"choice","choice":"aggressive"}}}
+        """);
+    using var scheduler = new JevScheduler<SquadDecision>(settings, d => d.IsModelDecision);
+    var loop = new SquadLoop(new SquadPlanner(client), scheduler, settings);
+    var host = new FakeSquadHost { Snapshot = Squad(), Map = new GridMap { Open = false } };
+    loop.Tick("s", host, 100, 1);
+    Require(loop.HasPending("s") && host.Applied.Count == 0, "blocked on network");
+    gate.SetResult();
+    await WaitFor(() => { loop.Tick("s", host, 120, 1); return host.Applied.Count > 0; });
+    Require(host.Applied.All(a => a.Order.Kind == OrderKind.VanillaFallback), "stale destinations issued");
+    Require(client.Calls == 1, "per-pawn calls");
+    await Task.CompletedTask;
+});
+
 Console.WriteLine($"Tests: {passed} passed, {failed} failed");
 Environment.ExitCode = failed == 0 ? 0 : 1;
 
@@ -447,11 +573,28 @@ static OperativeSnapshot Battlefield() => new(
     },
     Targets: new[] { new TargetCandidate("colonist_1", 145, 86, 0.8f, true) });
 
+static SquadMember Member(string id, bool op, float health, params string[] cells) => new(
+    new OperativeSnapshot(id, 130, 90, health, "AssaultRifle", 2,
+        cells.Length > 0
+            ? cells.Select((c, i) => new MovementCandidate(c, 140 + i, 87, 0.8f - i * 0.1f, 0.1f, 10 + i, i == 0 ? "firing_position" : "flank", true)).ToArray()
+            : new[]
+            {
+                new MovementCandidate("cell_a", 140, 87, 0.8f, 0.1f, 10, "firing_position", true),
+                new MovementCandidate("cell_b", 141, 87, 0.7f, 0.1f, 11, "flank", true),
+                new MovementCandidate("cell_c", 142, 87, 0.5f, 0.2f, 12, "firing_position", true)
+            },
+        new[] { new TargetCandidate("pawn_1", 145, 86, 0.8f, true) }), op);
+
+static SquadSnapshot Squad(float raiderHealth = 1f, int sent = 2, int down = 0) => new("s",
+    new[] { Member("op", true, 1f), Member("r1", false, raiderHealth) }, sent, down, 0);
+
 sealed class FakeClient(string json) : IJevClient
 {
     public IReadOnlyDictionary<string, object>? LastQuestions { get; private set; }
+    public int Calls { get; private set; }
     public Task<JsonDocument> DecideAsync(object state, IReadOnlyDictionary<string, object> questions, CancellationToken token)
     {
+        Calls++;
         LastQuestions = questions;
         return Task.FromResult(JsonDocument.Parse(json));
     }
@@ -539,4 +682,22 @@ sealed class GatedClient(Task gate, string json) : IJevClient
         await gate.WaitAsync(token);
         return JsonDocument.Parse(json);
     }
+}
+
+sealed class FakeSquadHost : ISquadHost
+{
+    public OperativeRecord Timing { get; } = new("squad", "Pirate");
+    public OperativeRecord OperativeRecord { get; } = new("op", "Pirate");
+    public TacticalTrigger Trigger => TacticalTrigger.None;
+    public ITacticalMap Map { get; set; } = new GridMap { Open = true };
+    public HashSet<string> Blocked { get; } = new();
+    public int Samples { get; private set; }
+    public List<(string Id, OperativeOrder Order)> Applied { get; } = new();
+
+    public SquadSnapshot Snapshot { get; set; } = null!;
+    public SquadSnapshot Sample() { Samples++; return Snapshot; }
+    public PawnBlock BlockOf(string id) => Blocked.Contains(id) ? PawnBlock.Downed : PawnBlock.None;
+    public ITacticalMap CurrentMap(string id) => Map;
+    public OperativeRecord? RecordOf(string id) => id == "op" ? OperativeRecord : null;
+    public void Apply(string id, OperativeOrder order) => Applied.Add((id, order));
 }

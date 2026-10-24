@@ -28,7 +28,7 @@ public sealed class OperativePlanner(IJevClient? client = null)
             .Take(MaxTargets - 1)
             .ToDictionary(t => t.Id, StringComparer.Ordinal);
 
-        var fallback = Fallback(moves, targets);
+        var fallback = Fallback(moves, targets, snapshot.HealthFraction);
         if (client is null)
             return fallback;
 
@@ -45,7 +45,7 @@ public sealed class OperativePlanner(IJevClient? client = null)
             ["movement"] = new
             {
                 type = "choice",
-                instructions = "Choose the exact safest tactically useful destination for this Operative now. Only select one listed destination ID, considering cover, exposure, distance, weapon and threats.",
+                instructions = "Choose the destination that best lets this Operative kill the colonists while staying alive: prefer a firing position or advance that still has good cover, and a retreat or cover cell only when badly hurt. Only select one listed destination ID.",
                 criteria = moveOptions
             },
             ["target"] = new
@@ -57,7 +57,7 @@ public sealed class OperativePlanner(IJevClient? client = null)
             ["stance"] = new
             {
                 type = "choice",
-                instructions = "Should the Operative press the attack, defend cautiously, or withdraw given this battlefield state?",
+                instructions = "The Operative is aggressive by default and presses the attack, but wants to survive. Choose withdraw only when its health is low enough that continuing is likely fatal; defensive only to take cover briefly.",
                 criteria = new Dictionary<string, string>
                 {
                     ["defensive"] = "Keep cover and avoid unnecessary exposure.",
@@ -101,6 +101,7 @@ public sealed class OperativePlanner(IJevClient? client = null)
             if (!Enum.IsDefined(parsedStance))
                 return fallback;
 
+            parsedStance = TacticalHeuristics.Guard(parsedStance, snapshot.HealthFraction, 0) ?? parsedStance;
             return new OperativeDecision(move, target == "none" ? null : target, parsedStance, true);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -113,13 +114,8 @@ public sealed class OperativePlanner(IJevClient? client = null)
 
     private static OperativeDecision Fallback(
         IReadOnlyDictionary<string, MovementCandidate> moves,
-        IReadOnlyDictionary<string, TargetCandidate> targets)
+        IReadOnlyDictionary<string, TargetCandidate> targets, float health)
     {
-        var bestMove = moves.Values
-            .OrderByDescending(c => c.Cover - c.Exposure)
-            .ThenBy(c => c.Distance)
-            .FirstOrDefault();
-        var bestTarget = targets.Values.OrderByDescending(t => t.Threat).FirstOrDefault();
-        return new OperativeDecision(bestMove?.Id ?? "hold", bestTarget?.Id, TacticalStance.Defensive, false);
+        return TacticalHeuristics.Decide(moves.Values.ToList(), targets.Values.ToList(), health, slot: 0);
     }
 }

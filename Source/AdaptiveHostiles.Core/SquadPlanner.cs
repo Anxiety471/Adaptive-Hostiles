@@ -20,7 +20,7 @@ public sealed record BreachPoint(string Id, int X, int Z, float Weakness, int De
 public sealed record SquadSnapshot(
     string SquadId, IReadOnlyList<SquadMember> Members, int Sent, int Down, int Retreated,
     IReadOnlyList<BreachPoint>? BreachPoints = null,
-    SquadPhase PreviousPhase = SquadPhase.Gather, int GatherCycles = 0)
+    SquadPhase PreviousPhase = SquadPhase.Gather, int GatherCycles = 0, int BreachCycles = 0)
 {
     public IReadOnlyList<BreachPoint> Breaches => BreachPoints ?? Array.Empty<BreachPoint>();
 
@@ -57,6 +57,9 @@ public sealed class SquadPlanner(IJevClient? client = null)
     public const float StagedWithin = 4f;
     /// <summary>After this many gather cycles the squad goes anyway, so a blocked member cannot stall the raid.</summary>
     public const int MaxGatherCycles = 4;
+    /// <summary>Ranged raiders wait for the melee push to reach the breach, at most this many cycles.</summary>
+    public const int MaxMeleeLeadCycles = 4;
+    public const float AtBreachWithin = 5f;
 
     public async Task<SquadDecision> DecideAsync(SquadSnapshot squad, CancellationToken cancellationToken = default) =>
         Sync(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad);
@@ -222,6 +225,35 @@ public sealed class SquadPlanner(IJevClient? client = null)
         _ => null
     };
 
+    /// <summary>
+    /// Melee first, ranged backup: after the go signal ranged raiders stay at their staging cell until
+    /// enough melee stand at the breach (or none are left, or the melee lead timed out).
+    /// </summary>
+    private static SquadDecision HoldRangedBehindMelee(SquadDecision decision, SquadSnapshot squad, string breachId)
+    {
+        var melee = squad.Members.Where(m => m.IsMelee).ToList();
+        if (melee.Count == 0 || squad.BreachCycles >= MaxMeleeLeadCycles) return decision;
+        var atBreach = melee.Count(m =>
+        {
+            var cell = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "breach_" + breachId);
+            if (cell is null) return true;
+            var dx = m.Snapshot.X - cell.X;
+            var dz = m.Snapshot.Z - cell.Z;
+            return Math.Sqrt(dx * dx + dz * dz) <= AtBreachWithin;
+        });
+        if (atBreach >= Math.Ceiling(melee.Count / 2.0)) return decision;
+
+        var held = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        foreach (var m in squad.Members.Where(m => !m.IsMelee))
+        {
+            var stage = StageCell(m, breachId);
+            if (stage is null || !held.TryGetValue(m.Snapshot.PawnId, out var d)) continue;
+            if (d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+            held[m.Snapshot.PawnId] = d with { DestinationId = stage.Id, Stance = TacticalStance.Aggressive };
+        }
+        return decision with { Members = held };
+    }
+
     private static MovementCandidate? StageCell(SquadMember m, string breachId) =>
         m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "stage_" + breachId);
 
@@ -245,7 +277,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
         var ready = squad.Members.Count == 0 || staged >= Math.Ceiling(squad.Members.Count * ReadyFraction)
                     || squad.PreviousPhase != SquadPhase.Gather || squad.GatherCycles >= MaxGatherCycles;
         var phase = ready ? (decision.Phase == SquadPhase.Gather ? SquadPhase.Breach : decision.Phase) : SquadPhase.Gather;
-        if (phase != SquadPhase.Gather) return decision with { Phase = phase };
+        if (phase != SquadPhase.Gather) return HoldRangedBehindMelee(decision with { Phase = phase }, squad, breachId);
 
         // Gathering: every healthy raider goes to its staging cell and holds fire discipline until the signal.
         var held = new Dictionary<string, OperativeDecision>(StringComparer.Ordinal);

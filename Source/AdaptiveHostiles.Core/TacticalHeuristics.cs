@@ -38,7 +38,8 @@ public static class TacticalHeuristics
     {
         if (stance is not (TacticalStance.Withdraw or TacticalStance.Flee)) return stance;
         if (health >= GuardHealth && lossFraction < GuardLossFraction) return TacticalStance.Aggressive;
-        if (stance == TacticalStance.Flee && !(health < FleeBelow || lossFraction >= GuardLossFraction))
+        // Fleeing means leaving the map for good: only a nearly dead raider in a raid that is being destroyed.
+        if (stance == TacticalStance.Flee && !(health < FleeBelow && lossFraction >= GuardLossFraction))
             return TacticalStance.Withdraw;
         return stance;
     }

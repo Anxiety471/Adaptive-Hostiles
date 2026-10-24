@@ -563,6 +563,24 @@ await Check("squad loop: remembers the phase between cycles", async () =>
     await Task.CompletedTask;
 });
 
+await Check("squad: ranged hold until the melee reach the breach; flee needs a lost raid and a nearly dead raider", async () =>
+{
+    var squad = StagedSquad(arrived: true) with { PreviousPhase = SquadPhase.Breach };
+    var hold = await new SquadPlanner().DecideAsync(squad);
+    Require(hold.Members["m1"].DestinationId == "cell_push", "melee not pushing");
+    Require(hold.Members["r1"].DestinationId == "cell_stage_r1", "ranged advanced before melee reached the breach");
+    // melee now standing on its breach cell
+    var landed = squad with { Members = squad.Members.Select(m => m.IsMelee
+        ? m with { Snapshot = m.Snapshot with { X = 150, Z = 90 } } : m).ToList() };
+    var go = await new SquadPlanner().DecideAsync(landed);
+    Require(go.Members["r1"].DestinationId == "cell_support", "ranged held after melee arrived");
+    Require((await new SquadPlanner().DecideAsync(squad with { BreachCycles = SquadPlanner.MaxMeleeLeadCycles })).Members["r1"].DestinationId == "cell_support", "ranged held forever");
+    Require(TacticalHeuristics.Guard(TacticalStance.Flee, 0.3f, 0.9) == TacticalStance.Withdraw, "hurt raider fled");
+    Require(TacticalHeuristics.Guard(TacticalStance.Flee, 0.1f, 0.2) == TacticalStance.Withdraw, "fled in a winning raid");
+    Require(TacticalHeuristics.Guard(TacticalStance.Flee, 0.1f, 0.6) == TacticalStance.Flee, "dying raider in a lost raid cannot flee");
+    await Task.CompletedTask;
+});
+
 await Check("squad loop: one sample and one resolve per member, cooldown honoured", async () =>
 {
     var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());

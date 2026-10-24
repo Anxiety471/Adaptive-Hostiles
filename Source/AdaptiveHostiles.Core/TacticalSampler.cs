@@ -77,7 +77,8 @@ public static class CandidateEnumerator
     {
         if (!hasThreats) return cover >= 0.5f ? "cover" : "advance";
         if (d1 > d0 + 2) return "retreat";
-        if (d1 <= range && d1 >= range * 0.5) return "firing_position";
+        // Accuracy falls off fast with distance, so firing positions are short to medium range, not the edge of it.
+        if (d1 <= range * 0.65 && d1 >= range * 0.3) return "firing_position";
         if (cover >= 0.5f) return "cover";
         if (d1 < d0 - 2) return "advance";
         return "flank";

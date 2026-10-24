@@ -26,7 +26,7 @@ public sealed class SquadLoop
     private readonly AdaptiveHostilesSettings _settings;
     private readonly TimeSpan _maxResultAge;
     private readonly Dictionary<string, (SquadSnapshot Offered, long Tick)> _pending = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, (SquadPhase Phase, int GatherCycles)> _phase = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (SquadPhase Phase, int GatherCycles, int BreachCycles)> _phase = new(StringComparer.Ordinal);
 
     public SquadLoop(SquadPlanner planner, JevScheduler<SquadDecision>? scheduler, AdaptiveHostilesSettings settings)
     {
@@ -77,7 +77,7 @@ public sealed class SquadLoop
         var snapshot = host.Sample();
         if (snapshot.Members.Count == 0) return;
         if (_phase.TryGetValue(squadId, out var known))
-            snapshot = snapshot with { PreviousPhase = known.Phase, GatherCycles = known.GatherCycles };
+            snapshot = snapshot with { PreviousPhase = known.Phase, GatherCycles = known.GatherCycles, BreachCycles = known.BreachCycles };
         if (_scheduler is null)
         {
             var local = _planner.DecideAsync(snapshot).GetAwaiter().GetResult();
@@ -100,8 +100,10 @@ public sealed class SquadLoop
                 member.IsOperative ? host.RecordOf(id) : null, tick, canFlee: !member.IsOperative);
             host.Apply(id, order);
         }
-        var cycles = decision.Phase == SquadPhase.Gather && _phase.TryGetValue(squadId, out var prior) ? prior.GatherCycles + 1 : 0;
-        _phase[squadId] = (decision.Phase, cycles);
+        _phase.TryGetValue(squadId, out var prior);
+        var gather = decision.Phase == SquadPhase.Gather ? prior.GatherCycles + 1 : 0;
+        var breach = decision.Phase == SquadPhase.Gather ? 0 : prior.BreachCycles + 1;
+        _phase[squadId] = (decision.Phase, gather, breach);
         OperativeRegistry.ScheduleNext(host.Timing, tick, seed, _settings);
     }
 }

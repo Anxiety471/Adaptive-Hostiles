@@ -34,8 +34,10 @@ public static class OperativeJobExecutor
         if (order.Kind == OrderKind.MoveTo)
         {
             var dest = new IntVec3(order.X, 0, order.Z);
+            // Re-issuing the same order every cycle would restart the aim; let a walk or a shoot run on.
+            if (AlreadyCarryingOut(pawn, dest, state)) return;
             var go = JobMaker.MakeJob(JobDefOf.Goto, dest);
-            go.locomotionUrgency = order.Stance == TacticalStance.Defensive
+            go.locomotionUrgency = order.Stance == TacticalStance.Defensive || pawn.Position.DistanceTo(dest) < 15f
                 ? LocomotionUrgency.Jog : LocomotionUrgency.Sprint;
             go.checkOverrideOnExpire = true;
             Start(pawn, go, state);
@@ -44,6 +46,10 @@ public static class OperativeJobExecutor
             if (order.Reason.StartsWith("breach_", StringComparison.Ordinal) && order.Stance != TacticalStance.Withdraw &&
                 IsMelee(pawn) && WallBreaker.TryFindBlocker(pawn, out var wall))
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, wall));
+            // Ranged raiders backing a breach shoot the wall too instead of idling behind it.
+            else if (order.Reason.StartsWith("support_", StringComparison.Ordinal) && target == null &&
+                     order.Stance != TacticalStance.Withdraw && !IsMelee(pawn) && WallBreaker.TryFindBlocker(pawn, out var cover))
+                pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, cover));
             if (target != null && order.Stance != TacticalStance.Withdraw)
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, target));
             // Never leave the queue empty: when it runs out vanilla assault AI would walk the raider elsewhere.
@@ -109,6 +115,16 @@ public static class OperativeJobExecutor
         var job = JobMaker.MakeJob(melee ? JobDefOf.AttackMelee : JobDefOf.AttackStatic, target);
         job.expiryInterval = 600;
         return job;
+    }
+
+    private static bool AlreadyCarryingOut(Pawn pawn, IntVec3 dest, OperativeRuntimeState state)
+    {
+        var job = pawn.CurJob;
+        if (job is null) return false;
+        if (state.Destination == dest && job == state.Job) return true; // still walking to the same cell
+        if (pawn.Position.DistanceTo(dest) > 2f) return false;
+        var def = job.def;
+        return def == JobDefOf.Wait_Combat || def == JobDefOf.AttackStatic || def == JobDefOf.AttackMelee;
     }
 
     private static bool IsMelee(Pawn pawn) => pawn.equipment?.Primary == null || pawn.equipment.Primary.def.IsMeleeWeapon;

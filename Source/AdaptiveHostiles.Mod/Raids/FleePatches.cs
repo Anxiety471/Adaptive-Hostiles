@@ -17,8 +17,13 @@ public static class Patch_Lord_GotoToil
     {
         if (newLordToil is null) return true;
         var name = newLordToil.GetType().Name;
-        if (!name.StartsWith("LordToil_ExitMap") && !name.Contains("Flee")) return true;
-        return !SquadDriver.SuppressesFlee(__instance);
+        // Leaving, fleeing, or "steal what they can and leave": all are retreats Jev must decide.
+        var retreat = name.StartsWith("LordToil_ExitMap") || name.StartsWith("LordToil_Steal") ||
+                      name.StartsWith("LordToil_Kidnap") || name.Contains("Flee") || name.Contains("Leave");
+        if (!retreat) return true;
+        if (!SquadDriver.SuppressesFlee(__instance)) return true;
+        Log.Message($"[Adaptive Hostiles] Blocked vanilla lord transition to {name}; Jev decides retreats.");
+        return false;
     }
 }
 

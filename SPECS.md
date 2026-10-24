@@ -95,7 +95,7 @@ A raid that contains an Operative is commanded as one squad by Jev, not only the
 
 ### Fleeing
 
-- The base game's flee check is disabled for squad-controlled raiders: their lord may not enter an exit toil, and panic/flee mental states are refused. A vanilla exit duty never blocks the tactical loop. Vanilla exit logic is allowed again after 30000 ticks of squad control so a raid cannot hang.
+- The base game's flee check is disabled for squad-controlled raiders: their lord may not enter an exit, flee, steal-and-leave or kidnap toil, and panic/flee mental states are refused. A vanilla exit duty never blocks the tactical loop. Vanilla exit logic is allowed again after 30000 ticks of squad control so a raid cannot hang.
 - **The Operative never flees.** A model `flee` answer for it is downgraded to `withdraw`.
 - For ordinary raiders **Jev decides** whether to flee (`flee` stance, an exit-map job). Without a model answer the local fallback flees only a raider below **20%** health once at least **half** the raid is down or gone.
 

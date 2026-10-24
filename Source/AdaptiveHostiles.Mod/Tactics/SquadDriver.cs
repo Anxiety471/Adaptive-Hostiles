@@ -145,10 +145,35 @@ public static class SquadDriver
                     Dist: OperativeSampler.HostilePawns(p).FirstOrDefault()?.Position.DistanceTo(p.Position) ?? float.MaxValue))
                 .OrderByDescending(x => x.IsOp).ThenBy(x => x.Dist)
                 .Take(SquadPlanner.MaxMembers)
-                .Select(x => new SquadMember(OperativeSampler.Sample(x.Pawn), x.IsOp))
                 .ToList();
             raid.Status(out var sent, out var down, out var retreated);
-            return new SquadSnapshot(raid.Id, ready, sent, down, retreated);
+            if (ready.Count == 0) return new SquadSnapshot(raid.Id, new List<SquadMember>(), sent, down, retreated);
+
+            // Where the colony is weakest, found once for the whole squad from the lead raider's map view.
+            var lead = ready[0].Pawn;
+            var defenders = ready.SelectMany(x => OperativeSampler.HostilePawns(x.Pawn)).Distinct().Take(16).ToList();
+            var turrets = OperativeSampler.HostileTurrets(lead);
+            var centre = BreachFinder.DefenderCentre(defenders, turrets);
+            var leadMap = OperativeSampler.MapFor(lead, defenders);
+            var breaches = BreachFinder.Find(lead, leadMap, defenders, turrets, centre);
+
+            var used = new HashSet<(int, int)>();
+            var squad = new List<SquadMember>();
+            for (var i = 0; i < ready.Count; i++)
+            {
+                var (pawn, isOp, _) = ready[i];
+                var melee = pawn.equipment?.Primary is null || pawn.equipment.Primary.def.IsMeleeWeapon;
+                var snap = OperativeSampler.Sample(pawn);
+                if (breaches.Count > 0)
+                {
+                    var range = Math.Max(pawn.equipment?.PrimaryEq?.PrimaryVerb?.verbProps.range ?? 0f, 2f);
+                    var roleCells = BreachFinder.RoleCells(
+                        pawn, OperativeSampler.MapFor(pawn, defenders), breaches, centre, melee, range, i, used);
+                    snap = snap with { Destinations = roleCells.Concat(snap.Destinations).ToList() };
+                }
+                squad.Add(new SquadMember(snap, isOp, melee));
+            }
+            return new SquadSnapshot(raid.Id, squad, sent, down, retreated, breaches);
         }
 
         public ITacticalMap CurrentMap(string pawnId)

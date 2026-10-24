@@ -500,6 +500,35 @@ await Check("turret range is flagged, penalised, and shown to the model", async 
     Require(JsonSerializer.Serialize(client.LastQuestions).Contains("HOSTILE TURRET"), "turret range not shown to model");
 });
 
+await Check("squad: melee push the weakest breach, ranged support behind it, in sync", async () =>
+{
+    var squad = BreachSquad();
+    var offline = await new SquadPlanner().DecideAsync(squad);
+    Require(offline.BreachId == "B2", "offline fallback did not pick the weakest breach");
+    Require(offline.Members["m1"].DestinationId == "cell_b2_push" && offline.Members["r1"].DestinationId == "cell_b2_support", "roles not synced");
+
+    var client = new FakeClient("""
+        {"answers":{"tactic":{"type":"choice","choice":"suppress_push"},"focus":{"type":"choice","choice":"pawn_1"},"breach":{"type":"choice","choice":"B1"},
+        "move_0":{"type":"choice","choice":"cell_b1_push"},"stance_0":{"type":"choice","choice":"aggressive"},
+        "move_1":{"type":"choice","choice":"cell_b1_push"},"stance_1":{"type":"choice","choice":"aggressive"}}}
+        """);
+    var d = await new SquadPlanner(client).DecideAsync(squad);
+    Require(d.IsModelDecision && d.BreachId == "B1", "model breach lost");
+    Require(d.Members["m1"].DestinationId == "cell_b1_push" && d.Members["m1"].IsModelDecision, "melee push rejected");
+    Require(d.Members["r1"].DestinationId != "cell_b1_push" && !d.Members["r1"].IsModelDecision, "ranged took the melee front");
+    Require(JsonSerializer.Serialize(client.LastQuestions!["breach"]).Contains("weakness"), "breach options missing");
+
+    var wrong = new FakeClient("""
+        {"answers":{"tactic":{"type":"choice","choice":"flank"},"focus":{"type":"choice","choice":"pawn_1"},"breach":{"type":"choice","choice":"B1"},
+        "move_0":{"type":"choice","choice":"cell_b2_push"},"stance_0":{"type":"choice","choice":"aggressive"},
+        "move_1":{"type":"choice","choice":"cell_b1_support"},"stance_1":{"type":"choice","choice":"aggressive"}}}
+        """);
+    var w = await new SquadPlanner(wrong).DecideAsync(squad);
+    Require(!w.Members["m1"].IsModelDecision, "melee sent to a different breach than the squad's");
+    Require(w.Members["r1"].DestinationId == "cell_b1_support", "valid ranged support rejected");
+    await Task.CompletedTask;
+});
+
 await Check("squad loop: one sample and one resolve per member, cooldown honoured", async () =>
 {
     var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());
@@ -607,6 +636,19 @@ static SquadMember Member(string id, bool op, float health, params string[] cell
 
 static SquadSnapshot Squad(float raiderHealth = 1f, int sent = 2, int down = 0) => new("s",
     new[] { Member("op", true, 1f), Member("r1", false, raiderHealth) }, sent, down, 0);
+
+static SquadSnapshot BreachSquad()
+{
+    MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
+    var tgt = new[] { new TargetCandidate("pawn_1", 145, 86, 0.8f, true) };
+    OperativeSnapshot Snap(string id, params MovementCandidate[] cells) =>
+        new(id, 130, 90, 1f, "x", 2, cells, tgt);
+    var melee = Snap("m1", C("cell_b1_push", "breach_B1", 150), C("cell_b2_push", "breach_B2", 160), C("cell_free", "cover", 131));
+    var ranged = Snap("r1", C("cell_b1_support", "support_B1", 140), C("cell_b2_support", "support_B2", 141),
+        C("cell_b1_push", "breach_B1", 150), C("cell_free2", "cover", 132));
+    return new SquadSnapshot("s", new[] { new SquadMember(melee, false, true), new SquadMember(ranged, false, false) }, 2, 0, 0,
+        new[] { new BreachPoint("B1", 150, 90, 0.2f, 4, 1), new BreachPoint("B2", 160, 90, 0.9f, 0, 0) });
+}
 
 sealed class FakeClient(string json) : IJevClient
 {

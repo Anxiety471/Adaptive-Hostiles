@@ -42,13 +42,31 @@ public static class OperativeJobExecutor
             state.Destination = dest;
             if (target != null && order.Stance != TacticalStance.Withdraw)
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, target));
+            // Never leave the queue empty: when it runs out vanilla assault AI would walk the raider elsewhere.
+            pawn.jobs.jobQueue.EnqueueLast(MakeHold());
             return;
         }
 
         // Hold: stay put, shooting only if the chosen target is actually hittable from here.
         state.Destination = null;
         if (target != null && order.Stance != TacticalStance.Withdraw && CanAttackFromHere(pawn, target))
+        {
             Start(pawn, MakeAttack(pawn, target), state);
+            pawn.jobs.jobQueue.EnqueueLast(MakeHold());
+        }
+        else
+        {
+            Start(pawn, MakeHold(), state);
+        }
+    }
+
+    /// <summary>Stand and shoot whatever comes into view; keeps vanilla movement AI from taking over between orders.</summary>
+    private static Job MakeHold()
+    {
+        var wait = JobMaker.MakeJob(JobDefOf.Wait_Combat);
+        wait.expiryInterval = 900;
+        wait.checkOverrideOnExpire = true;
+        return wait;
     }
 
     /// <summary>Jev-ordered exit: walk to the best map edge spot and leave. Never used for the Operative.</summary>
@@ -66,6 +84,7 @@ public static class OperativeJobExecutor
 
     private static void Start(Pawn pawn, Job job, OperativeRuntimeState state)
     {
+        pawn.jobs.ClearQueuedJobs();
         pawn.jobs.StartJob(job, JobCondition.InterruptForced);
         state.Job = job;
         state.Fleeing = false;

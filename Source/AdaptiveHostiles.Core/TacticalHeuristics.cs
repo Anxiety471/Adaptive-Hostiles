@@ -18,10 +18,11 @@ public static class TacticalHeuristics
 
     public static OperativeDecision Decide(
         IReadOnlyList<MovementCandidate> moves, IReadOnlyList<TargetCandidate> targets,
-        float health, int slot, string? focusTargetId = null, bool canFlee = false, double lossFraction = 0)
+        float health, int slot, string? focusTargetId = null, bool canFlee = false, double lossFraction = 0,
+        string? breachId = null, bool isMelee = false)
     {
         var stance = StanceFor(health, canFlee, lossFraction);
-        var dest = stance == TacticalStance.Flee ? null : PickDestination(moves, stance, slot);
+        var dest = stance == TacticalStance.Flee ? null : PickDestination(moves, stance, slot, breachId, isMelee);
         return new OperativeDecision(dest?.Id ?? "hold", PickTarget(targets, focusTargetId), stance, false);
     }
 
@@ -49,10 +50,18 @@ public static class TacticalHeuristics
     }
 
     public static MovementCandidate? PickDestination(
-        IReadOnlyList<MovementCandidate> moves, TacticalStance stance, int slot)
+        IReadOnlyList<MovementCandidate> moves, TacticalStance stance, int slot,
+        string? breachId = null, bool isMelee = false)
     {
         var usable = moves.Where(c => c.Reachable).ToList();
         if (usable.Count == 0) return null;
+        if (breachId is not null && stance != TacticalStance.Withdraw)
+        {
+            // Role cells keep the squad in sync: melee push the breach, ranged back them up behind.
+            var role = (isMelee ? "breach_" : "support_") + breachId;
+            var cell = Best(usable.Where(c => c.Purpose == role), slot);
+            if (cell is not null) return cell;
+        }
         var order = stance == TacticalStance.Withdraw ? SafeOrder : slot % 2 == 0 ? LeadOrder : FlankOrder;
         foreach (var purpose in order)
         {

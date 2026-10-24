@@ -6,11 +6,20 @@ namespace AdaptiveHostiles.Core;
 public enum SquadTactic { FocusFire, Flank, SuppressAndPush, Regroup }
 
 /// <summary>One controllable raider as sampled on the game thread; the Operative is flagged.</summary>
-public sealed record SquadMember(OperativeSnapshot Snapshot, bool IsOperative);
+public sealed record SquadMember(OperativeSnapshot Snapshot, bool IsOperative, bool IsMelee = false);
+
+/// <summary>
+/// A place the colony is weakly defended, scored locally so Jev picks where to break through
+/// instead of walking into the open kill zone. Weakness is 0..1, higher is easier to break.
+/// </summary>
+public sealed record BreachPoint(string Id, int X, int Z, float Weakness, int Defenders, int Turrets);
 
 public sealed record SquadSnapshot(
-    string SquadId, IReadOnlyList<SquadMember> Members, int Sent, int Down, int Retreated)
+    string SquadId, IReadOnlyList<SquadMember> Members, int Sent, int Down, int Retreated,
+    IReadOnlyList<BreachPoint>? BreachPoints = null)
 {
+    public IReadOnlyList<BreachPoint> Breaches => BreachPoints ?? Array.Empty<BreachPoint>();
+
     public double LossFraction => Sent <= 0 ? 0 : (Down + Retreated) / (double)Sent;
 
     /// <summary>Union of what members can see, strongest threat per target.</summary>
@@ -25,7 +34,8 @@ public sealed record SquadSnapshot(
 /// <summary>Coordinated orders for a whole squad. Members map to the offered snapshots by pawn id.</summary>
 public sealed record SquadDecision(
     SquadTactic Tactic, string? FocusTargetId,
-    IReadOnlyDictionary<string, OperativeDecision> Members, bool IsModelDecision);
+    IReadOnlyDictionary<string, OperativeDecision> Members, bool IsModelDecision,
+    string? BreachId = null);
 
 /// <summary>
 /// One model call per squad per cycle. Jev sees every member's exact candidate cells and answers a
@@ -75,14 +85,21 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 criteria = TargetOptions(targets)
             }
         };
+        if (squad.Breaches.Count > 0)
+            questions["breach"] = new
+            {                type = "choice",
+                instructions = "Pick where the whole squad breaks through. Choose the weakest point of the colony's defence (fewest defenders and turrets covering it), never the open kill zone in front of the defenders. Melee raiders will push this point and ranged raiders will support it from behind, together.",
+                criteria = BreachOptions(squad.Breaches)
+            };
+
         for (var i = 0; i < members.Count; i++)
         {
             var m = members[i];
-            var role = m.Member.IsOperative ? "the elite Operative, who never flees" : "a raider";
+            var role = (m.Member.IsOperative ? "the elite Operative, who never flees" : "a raider") + (m.Member.IsMelee ? ", MELEE" : ", RANGED");
             questions[$"move_{i}"] = new
             {
                 type = "choice",
-                instructions = $"Destination for member {i} ({role}). Coordinate with the others: every member MUST get a different destination, spread over different approaches, use cover, and match the squad plan. Only select a listed ID.",
+                instructions = $"Destination for member {i} ({role}). Coordinate with the others: melee members take the chosen breach point's breach_ cell and ranged members its support_ cell, so melee push in front while ranged back them up from behind on the same side. Every member MUST get a different destination, spread over different approaches, use cover, and match the squad plan. Only select a listed ID.",
                 criteria = MoveOptions(m.Moves)
             };
             var stances = new Dictionary<string, string>
@@ -106,9 +123,10 @@ public sealed class SquadPlanner(IJevClient? client = null)
             var state = new
             {
                 squad.Sent, squad.Down, squad.Retreated,
+                breachPoints = squad.Breaches,
                 members = members.Select((m, i) => new
                 {
-                    index = i, isOperative = m.Member.IsOperative,
+                    index = i, isOperative = m.Member.IsOperative, isMelee = m.Member.IsMelee,
                     m.Member.Snapshot.X, m.Member.Snapshot.Z,
                     health = m.Member.Snapshot.HealthFraction, weapon = m.Member.Snapshot.EquippedWeapon,
                     destinations = m.Moves.Values.ToArray()
@@ -127,8 +145,13 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 _ => (SquadTactic)(-1)
             };
             var focus = JevAnswers.Choice(root, "focus");
+            var breach = JevAnswers.Choice(root, "breach");
             if (!Enum.IsDefined(tactic) || focus is null || (focus != "none" && !targets.ContainsKey(focus)))
                 return fallback;
+            if (squad.Breaches.Count > 0 &&
+                (breach is null || (breach != "none" && squad.Breaches.All(b => b.Id != breach))))
+                return fallback;
+            var breachId = breach is null or "none" ? null : breach;
             var focusId = focus == "none" ? null : focus;
 
             var decisions = new Dictionary<string, OperativeDecision>(StringComparer.Ordinal);
@@ -141,7 +164,8 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 var stance = TacticalHeuristics.Guard(
                     ParseStance(JevAnswers.Choice(root, $"stance_{i}"), m.Member.IsOperative),
                     m.Member.Snapshot.HealthFraction, squad.LossFraction);
-                var valid = move is not null && stance is not null &&
+                var role = move is not null && m.Moves.TryGetValue(move, out var picked) ? picked.Purpose : "";
+                var valid = move is not null && stance is not null && RoleAllows(m.Member.IsMelee, role, breachId) &&
                             (move == "hold" || (m.Moves.ContainsKey(move) && !taken.Contains(move)));
                 if (valid && move != "hold") taken.Add(move!);
                 var chosen = valid
@@ -150,7 +174,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 if (!valid && chosen.DestinationId != "hold") taken.Add(chosen.DestinationId);
                 decisions[id] = chosen;
             }
-            return new SquadDecision(tactic, focusId, decisions, true);
+            return new SquadDecision(tactic, focusId, decisions, true, breachId);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return fallback; }
         catch (HttpRequestException) { return fallback; }
@@ -165,6 +189,28 @@ public sealed class SquadPlanner(IJevClient? client = null)
         "flee" when !isOperative => TacticalStance.Flee,
         _ => null
     };
+
+    /// <summary>
+    /// Role cells are named "breach_{id}" (melee push) and "support_{id}" (ranged backup). Everyone must use
+    /// the cells of the chosen breach point, and ranged raiders may not take the melee front.
+    /// </summary>
+    private static bool RoleAllows(bool isMelee, string purpose, string? breachId)
+    {
+        if (purpose.StartsWith("breach_", StringComparison.Ordinal) || purpose.StartsWith("support_", StringComparison.Ordinal))
+        {
+            if (breachId is null || !purpose.EndsWith("_" + breachId, StringComparison.Ordinal)) return false;
+            return isMelee == purpose.StartsWith("breach_", StringComparison.Ordinal);
+        }
+        return true;
+    }
+
+    private static Dictionary<string, string> BreachOptions(IReadOnlyList<BreachPoint> points)
+    {
+        var o = new Dictionary<string, string> { ["none"] = "No breach point; attack where the enemy is." };
+        foreach (var b in points)
+            o[b.Id] = $"Breach at ({b.X},{b.Z}): weakness {b.Weakness:0.00}, {b.Defenders} defenders and {b.Turrets} turrets cover it.";
+        return o;
+    }
 
     private static Dictionary<string, string> TargetOptions(IReadOnlyDictionary<string, TargetCandidate> targets)
     {
@@ -186,15 +232,18 @@ public sealed class SquadPlanner(IJevClient? client = null)
         SquadSnapshot squad, IReadOnlyList<Entry> members, IReadOnlyDictionary<string, TargetCandidate> targets)
     {
         var focus = TacticalHeuristics.PickTarget(targets.Values.ToList(), null);
+        var breach = squad.Breaches.OrderByDescending(b => b.Weakness).ThenBy(b => b.Id, StringComparer.Ordinal)
+            .FirstOrDefault()?.Id;
         var decisions = new Dictionary<string, OperativeDecision>(StringComparer.Ordinal);
         for (var i = 0; i < members.Count; i++)
         {
             var m = members[i];
             decisions[m.Member.Snapshot.PawnId] = TacticalHeuristics.Decide(
                 m.Moves.Values.ToList(), m.Member.Snapshot.Targets, m.Member.Snapshot.HealthFraction,
-                slot: i, focus, canFlee: !m.Member.IsOperative, lossFraction: squad.LossFraction);
+                slot: i, focus, canFlee: !m.Member.IsOperative, lossFraction: squad.LossFraction,
+                breachId: breach, isMelee: m.Member.IsMelee);
         }
-        return new SquadDecision(SquadTactic.FocusFire, focus, decisions, false);
+        return new SquadDecision(SquadTactic.FocusFire, focus, decisions, false, breach);
     }
 
     private sealed record Entry(SquadMember Member, Dictionary<string, MovementCandidate> Moves);

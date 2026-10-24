@@ -87,6 +87,12 @@ A raid that contains an Operative is commanded as one squad by Jev, not only the
 - Squad cadence is slower than the lone Operative: 360–600 tick cooldown and 360 tick commitment, so orders are not replaced mid-walk.
 - Every member must get a distinct destination.
 
+### Breach and roles
+
+- The Mod scores **breach points** around the defenders: reachable cells near the colony whose weakness falls with every defender who sees them and every turret covering them. The kill zone in front of the defenders scores low. The top 3 (`B1`..`B3`) go to Jev in a `breach` Choice; the squad answers one.
+- Each member also gets role cells for every breach point: **melee** a `breach_<id>` cell at the point, **ranged** a `support_<id>` cell behind it on the raiders' side. All members must use the chosen breach point's cells, and ranged members may not take the melee `breach_` cells, so melee push in front with ranged backup from behind, together. Offline, the weakest breach is chosen and roles follow it.
+- Jev's orders own the squad's movement: each order clears the pawn's queued jobs and ends with a `Wait_Combat` hold, so vanilla assault AI cannot walk a raider elsewhere between orders.
+
 ### Aggression and survival
 
 - Default posture is aggressive: press the attack from the best-covered firing position, advance or flank cell; spread members over different approaches and focus fire.

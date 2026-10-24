@@ -1,3 +1,4 @@
+using AdaptiveHostiles.Core;
 using HarmonyLib;
 using Verse;
 
@@ -9,9 +10,24 @@ namespace AdaptiveHostiles.Mod;
 /// </summary>
 public sealed class AdaptiveHostilesMod : Verse.Mod
 {
+    private readonly ModSettingsData _data;
+
+    /// <summary>Player-entered provider settings; read once when the decision client is created.</summary>
+    public static ProviderSettings Providers { get; private set; } = new();
+
     public AdaptiveHostilesMod(ModContentPack content) : base(content)
     {
+        _data = GetSettings<ModSettingsData>();
+        Providers = _data.ToProviderSettings();
         new Harmony("anxiety471.adaptivehostiles").PatchAll();
         Log.Message("[Adaptive Hostiles] Pre-alpha loaded; hostile raid composition hook is active.");
+    }
+
+    public override string SettingsCategory() => "Adaptive Hostiles";
+
+    public override void DoSettingsWindowContents(UnityEngine.Rect inRect)
+    {
+        SettingsWindow.Draw(inRect, _data);
+        Providers = _data.ToProviderSettings();
     }
 }

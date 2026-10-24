@@ -124,6 +124,20 @@ await Check("provider selection follows env and falls back to local", async () =
     await Task.CompletedTask;
 });
 
+await Check("player settings win over env, blank settings defer to env", async () =>
+{
+    using var http = new HttpClient();
+    Func<string, string?> env = k => k == "TYPESAFE_API_KEY" ? "envkey" : null;
+    Require(DecisionProviders.Create(http, new ProviderSettings().ToLookup(env)) is JevClient, "blank settings should defer to env");
+    var s = new ProviderSettings { AnthropicKey = " k " };
+    Require(DecisionProviders.Create(http, s.ToLookup(env)) is JevClient, "auto keeps env priority");
+    Require(DecisionProviders.Create(http, (s with { Provider = DecisionProvider.Anthropic }).ToLookup(env)) is AnthropicClient, "picked provider ignored");
+    Require(DecisionProviders.Create(http, (s with { Provider = DecisionProvider.Local }).ToLookup(env)) is null, "local setting must disable remote");
+    var local = new ProviderSettings { Provider = DecisionProvider.OpenAiCompatible, OpenAiBaseUrl = "http://localhost:11434/v1" };
+    Require(DecisionProviders.Create(http, local.ToLookup(_ => null)) is OpenAiCompatibleClient, "keyless local server");
+    await Task.CompletedTask;
+});
+
 await Check("roster is independent of raid points, deterministic and bounded", async () =>
 {
     var plan = new RaidPlan(RaidScale.Invasion, RaidApproach.Breach, 12, true, true);

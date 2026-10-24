@@ -16,13 +16,15 @@ public static class JevPlanService
     private static readonly DecisionCache<RaidPlan> Cache = new(CacheTtl);
     private static readonly JevScheduler<RaidPlan> Scheduler = new(isModelResult: p => p.IsModelDecision);
     private static readonly RaidPlanner Fallback = new();
-    private static readonly RaidPlanner? Remote = CreateRemote();
+    /// <summary>One decision client for every decision type, chosen by DecisionProviders; null means local fallback.</summary>
+    public static IJevClient? SharedClient { get; } = CreateClient();
 
-    private static RaidPlanner? CreateRemote()
+    private static readonly RaidPlanner? Remote = SharedClient is null ? null : new RaidPlanner(SharedClient);
+
+    private static IJevClient? CreateClient()
     {
-        var client = DecisionProviders.Create(
+        return DecisionProviders.Create(
             new HttpClient { Timeout = TimeSpan.FromSeconds(10) }, Environment.GetEnvironmentVariable);
-        return client is null ? null : new RaidPlanner(client);
     }
 
     public static bool JevEnabled => Remote is not null;

@@ -23,6 +23,7 @@ public sealed class AdaptiveHostilesComponent : GameComponent
 
     public override void GameComponentTick()
     {
+        Tactics.OperativeDriver.Tick(Registry);
         if (tracked.Count == 0 || Find.TickManager.TicksGame % 250 != 0) return;
         for (var i = tracked.Count - 1; i >= 0; i--)
         {
@@ -35,9 +36,9 @@ public sealed class AdaptiveHostilesComponent : GameComponent
         }
     }
 
-    public override void LoadedGame() => JevPlanService.Reset();
+    public override void LoadedGame() { JevPlanService.Reset(); Tactics.OperativeDriver.Reset(); }
 
-    public override void StartedNewGame() => JevPlanService.Reset();
+    public override void StartedNewGame() { JevPlanService.Reset(); Tactics.OperativeDriver.Reset(); }
 
     public override void ExposeData()
     {

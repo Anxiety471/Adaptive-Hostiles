@@ -150,6 +150,28 @@ await Check("operative profile and elite roll are seeded and in range", async ()
     await Task.CompletedTask;
 });
 
+await Check("operative gear is seeded, tech-bounded and falls back to melee", async () =>
+{
+    var items = new List<GearCandidate>
+    {
+        new("Revolver", GearSlot.RangedWeapon, 4, 8f), new("Rifle", GearSlot.RangedWeapon, 4, 12f),
+        new("ChargeRifle", GearSlot.RangedWeapon, 5, 20f), new("Bow", GearSlot.RangedWeapon, 3, 5f),
+        new("Club", GearSlot.MeleeWeapon, 2, 4f),
+        new("FlakVest", GearSlot.BodyArmor, 4, 1.2f), new("Marine", GearSlot.BodyArmor, 5, 2f),
+        new("SimpleHelmet", GearSlot.Helmet, 4, 0.8f),
+    };
+    var a = OperativeGear.Roll(items, 4, 11)!;
+    Require(a == OperativeGear.Roll(items, 4, 11), "gear not deterministic");
+    Require(a.Weapon.DefName is "Revolver" or "Rifle", "weapon exceeds faction tech or isn't top tier");
+    Require(a.BodyArmor!.DefName == "FlakVest" && a.Helmet!.DefName == "SimpleHelmet", "armor wrong for tech");
+    for (ulong s = 0; s < 200; s++)
+        Require(OperativeGear.Roll(items, 5, s)!.Weapon.DefName == "ChargeRifle", "spacer weapon not used");
+    var tribal = OperativeGear.Roll(items, 2, 1)!;
+    Require(tribal.Weapon.DefName == "Club" && tribal.BodyArmor is null && tribal.Helmet is null, "neolithic fallback wrong");
+    Require(OperativeGear.Roll(new List<GearCandidate>(), 4, 1) is null, "empty candidates should yield null");
+    await Task.CompletedTask;
+});
+
 await Check("candidate enumeration is bounded, reachable and deterministic", async () =>
 {
     var map = new GridMap();
@@ -271,6 +293,89 @@ await Check("raid memory adapts fallback scale by at most one step", async () =>
     Require(plan.Scale == RaidScale.Invasion, "fallback plan should use raid memory");
 });
 
+await Check("tactical loop: offline fallback applies a revalidated order and honours cooldown", async () =>
+{
+    var loop = new OperativeTacticalLoop(new OperativePlanner(), null, new AdaptiveHostilesSettings());
+    var rec = new OperativeRecord("op", "Pirate");
+    var host = new FakeHost();
+    loop.Tick(rec, host, 100, 1);
+    Require(host.Applied.Count == 1 && host.Applied[0].Kind == OrderKind.MoveTo, "no order applied");
+    Require(host.Samples == 1 && rec.NextDecisionTick >= 220, "cooldown not scheduled");
+    loop.Tick(rec, host, 110, 1);
+    Require(host.Samples == 1, "resampled during cooldown");
+    host.Trigger = TacticalTrigger.Damaged;
+    loop.Tick(rec, host, 120, 1);
+    Require(host.Samples == 1, "ignored minimum commitment");
+    loop.Tick(rec, host, 190, 1);
+    Require(host.Samples == 2, "no reaction to damage after commitment");
+    await Task.CompletedTask;
+});
+
+await Check("tactical loop: blocked pawn is never sampled or ordered", async () =>
+{
+    var loop = new OperativeTacticalLoop(new OperativePlanner(), null, new AdaptiveHostilesSettings());
+    var host = new FakeHost { Block = PawnBlock.Downed };
+    loop.Tick(new OperativeRecord("op", "Pirate"), host, 100, 1);
+    Require(host.Samples == 0 && host.Applied.Count == 0, "downed pawn was driven");
+    await Task.CompletedTask;
+});
+
+await Check("tactical loop: remote answer arrives off-thread and is revalidated on take", async () =>
+{
+    var settings = new AdaptiveHostilesSettings();
+    var gate = new TaskCompletionSource();
+    var client = new GatedClient(gate.Task, """
+        {"answers":{"movement":{"type":"choice","choice":"hold"},"target":{"type":"choice","choice":"none"},"stance":{"type":"choice","choice":"aggressive"}}}
+        """);
+    using var scheduler = new JevScheduler<OperativeDecision>(settings, d => d.IsModelDecision);
+    var loop = new OperativeTacticalLoop(new OperativePlanner(client), scheduler, settings);
+    var rec = new OperativeRecord("op", "Pirate");
+    var host = new FakeHost();
+    loop.Tick(rec, host, 100, 1);
+    Require(loop.HasPending("op") && host.Applied.Count == 0, "request not pending without blocking");
+    loop.Tick(rec, host, 110, 1);
+    await WaitFor(() => client.Calls == 1);
+    Require(client.Calls == 1 && host.Samples == 1, "duplicate in-flight request");
+    gate.SetResult();
+    await WaitFor(() => { loop.Tick(rec, host, 120, 1); return host.Applied.Count > 0; });
+    Require(host.Applied[0].Kind == OrderKind.Hold && host.Applied[0].Stance == TacticalStance.Aggressive, "model answer not applied");
+    Require(!loop.HasPending("op"), "pending not cleared");
+    await Task.CompletedTask;
+});
+
+await Check("tactical loop: map changed during latency falls back to vanilla", async () =>
+{
+    var settings = new AdaptiveHostilesSettings();
+    var gate = new TaskCompletionSource();
+    var client = new GatedClient(gate.Task, """
+        {"answers":{"movement":{"type":"choice","choice":"cell_142_87"},"target":{"type":"choice","choice":"none"},"stance":{"type":"choice","choice":"defensive"}}}
+        """);
+    using var scheduler = new JevScheduler<OperativeDecision>(settings, d => d.IsModelDecision);
+    var loop = new OperativeTacticalLoop(new OperativePlanner(client), scheduler, settings);
+    var host = new FakeHost();
+    var rec = new OperativeRecord("op", "Pirate");
+    loop.Tick(rec, host, 100, 1);
+    host.Map = new GridMap { Open = false };
+    gate.SetResult();
+    await WaitFor(() => { loop.Tick(rec, host, 120, 1); return host.Applied.Count > 0; });
+    Require(host.Applied[0].Kind == OrderKind.VanillaFallback, "stale destination issued");
+    await Task.CompletedTask;
+});
+
+await Check("tactical loop: lost request times out and replans", async () =>
+{
+    var settings = new AdaptiveHostilesSettings { NetworkDeadline = TimeSpan.FromMilliseconds(20) };
+    using var scheduler = new JevScheduler<OperativeDecision>(settings, d => d.IsModelDecision);
+    var loop = new OperativeTacticalLoop(new OperativePlanner(new GatedClient(new TaskCompletionSource().Task, "{}")), scheduler, settings);
+    var host = new FakeHost();
+    var rec = new OperativeRecord("op", "Pirate");
+    loop.Tick(rec, host, 100, 1);
+    await Task.Delay(100);
+    loop.Tick(rec, host, 100 + 130, 1);
+    Require(!loop.HasPending("op") && rec.NextDecisionTick > 230, "timeout not released");
+    await Task.CompletedTask;
+});
+
 Console.WriteLine($"Tests: {passed} passed, {failed} failed");
 Environment.ExitCode = failed == 0 ? 0 : 1;
 
@@ -387,5 +492,37 @@ sealed class StubHandler(string body) : HttpMessageHandler
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json")
         });
+    }
+}
+
+sealed class FakeHost : IOperativeHost
+{
+    public PawnBlock Block { get; set; }
+    public TacticalTrigger Trigger { get; set; }
+    public ITacticalMap Map { get; set; } = new GridMap();
+    public ITacticalMap CurrentMap => Map;
+    public int Samples { get; private set; }
+    public List<OperativeOrder> Applied { get; } = new();
+
+    public OperativeSnapshot Sample()
+    {
+        Samples++;
+        return new OperativeSnapshot("op", 130, 90, 0.85f, "AssaultRifle", 2,
+            new[] { new MovementCandidate("cell_142_87", 142, 87, 0.9f, 0.1f, 12, "cover", true) },
+            new[] { new TargetCandidate("pawn_1", 145, 86, 0.8f, true) });
+    }
+
+    public void Apply(OperativeOrder order) => Applied.Add(order);
+}
+
+sealed class GatedClient(Task gate, string json) : IJevClient
+{
+    private int _calls;
+    public int Calls => _calls;
+    public async Task<JsonDocument> DecideAsync(object state, IReadOnlyDictionary<string, object> questions, CancellationToken token)
+    {
+        Interlocked.Increment(ref _calls);
+        await gate.WaitAsync(token);
+        return JsonDocument.Parse(json);
     }
 }

@@ -423,7 +423,7 @@ await Check("squad: one model call returns coordinated per-member orders", async
         "move_0":{"type":"choice","choice":"cell_a"},"stance_0":{"type":"choice","choice":"aggressive"},
         "move_1":{"type":"choice","choice":"cell_b"},"stance_1":{"type":"choice","choice":"flee"}}}
         """);
-    var d = await new SquadPlanner(client).DecideAsync(Squad());
+    var d = await new SquadPlanner(client).DecideAsync(Squad(raiderHealth: 0.1f, sent: 4, down: 3));
     Require(d.IsModelDecision && d.Tactic == SquadTactic.Flank && d.FocusTargetId == "pawn_1", "squad plan lost");
     Require(d.Members["op"].DestinationId == "cell_a" && d.Members["op"].TargetId == "pawn_1", "operative order wrong");
     Require(d.Members["r1"].DestinationId == "cell_b" && d.Members["r1"].Stance == TacticalStance.Flee, "raider flee ignored");
@@ -462,6 +462,21 @@ await Check("squad: offline fallback is aggressive, spread, and only wounded rai
     Require(l.Members["op"].Stance != TacticalStance.Flee, "operative fled");
     var cap = new SquadSnapshot("s", Enumerable.Range(0, 30).Select(i => Member($"r{i}", false, 1f)).ToList(), 30, 0, 0);
     Require((await new SquadPlanner().DecideAsync(cap)).Members.Count == SquadPlanner.MaxMembers, "squad call unbounded");
+    await Task.CompletedTask;
+});
+
+await Check("squad: model withdraw/flee for healthy raiders is kept aggressive", async () =>
+{
+    var client = new FakeClient("""
+        {"answers":{"tactic":{"type":"choice","choice":"regroup"},"focus":{"type":"choice","choice":"pawn_1"},
+        "move_0":{"type":"choice","choice":"cell_a"},"stance_0":{"type":"choice","choice":"withdraw"},
+        "move_1":{"type":"choice","choice":"cell_b"},"stance_1":{"type":"choice","choice":"flee"}}}
+        """);
+    var d = await new SquadPlanner(client).DecideAsync(Squad());
+    Require(d.Members["op"].IsModelDecision && d.Members["op"].Stance == TacticalStance.Aggressive, "healthy withdraw obeyed");
+    Require(d.Members["r1"].Stance == TacticalStance.Aggressive, "healthy flee obeyed");
+    var hurt = await new SquadPlanner(client).DecideAsync(Squad(raiderHealth: 0.3f));
+    Require(hurt.Members["r1"].Stance == TacticalStance.Withdraw, "hurt raider flee not downgraded to withdraw");
     await Task.CompletedTask;
 });
 

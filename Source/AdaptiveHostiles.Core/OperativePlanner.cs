@@ -101,6 +101,7 @@ public sealed class OperativePlanner(IJevClient? client = null)
             if (!Enum.IsDefined(parsedStance))
                 return fallback;
 
+            parsedStance = TacticalHeuristics.Guard(parsedStance, snapshot.HealthFraction, 0) ?? parsedStance;
             return new OperativeDecision(move, target == "none" ? null : target, parsedStance, true);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

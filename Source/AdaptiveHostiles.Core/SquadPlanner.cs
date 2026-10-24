@@ -96,7 +96,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
             questions[$"stance_{i}"] = new
             {
                 type = "choice",
-                instructions = $"Stance for member {i} ({role}). Aggressive unless badly hurt or the squad is losing.",
+                instructions = $"Stance for member {i} ({role}, health {m.Member.Snapshot.HealthFraction:0.00}). Almost always aggressive. Withdraw only if health is below {TacticalHeuristics.GuardHealth:0.00} or the squad is clearly being destroyed; flee only if nearly dead and the raid is lost. Healthy members must stay aggressive.",
                 criteria = stances
             };
         }
@@ -138,7 +138,9 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 var m = members[i];
                 var id = m.Member.Snapshot.PawnId;
                 var move = JevAnswers.Choice(root, $"move_{i}");
-                var stance = ParseStance(JevAnswers.Choice(root, $"stance_{i}"), m.Member.IsOperative);
+                var stance = TacticalHeuristics.Guard(
+                    ParseStance(JevAnswers.Choice(root, $"stance_{i}"), m.Member.IsOperative),
+                    m.Member.Snapshot.HealthFraction, squad.LossFraction);
                 var valid = move is not null && stance is not null &&
                             (move == "hold" || (m.Moves.ContainsKey(move) && !taken.Contains(move)));
                 if (valid && move != "hold") taken.Add(move!);

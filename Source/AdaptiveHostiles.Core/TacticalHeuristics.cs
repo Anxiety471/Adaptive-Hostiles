@@ -23,6 +23,23 @@ public static class TacticalHeuristics
         return new OperativeDecision(dest?.Id ?? "hold", PickTarget(targets, focusTargetId), stance, false);
     }
 
+    /// <summary>Below this health a model-ordered withdraw or flee is believed.</summary>
+    public const float GuardHealth = 0.5f;
+    public const double GuardLossFraction = 0.5;
+
+    /// <summary>
+    /// Keeps the squad aggressive: a model withdraw or flee for a healthy raider in a squad that is
+    /// not losing is downgraded to aggressive; flee needs health under the flee line or a lost raid.
+    /// </summary>
+    public static TacticalStance? Guard(TacticalStance? stance, float health, double lossFraction)
+    {
+        if (stance is not (TacticalStance.Withdraw or TacticalStance.Flee)) return stance;
+        if (health >= GuardHealth && lossFraction < GuardLossFraction) return TacticalStance.Aggressive;
+        if (stance == TacticalStance.Flee && !(health < FleeBelow || lossFraction >= GuardLossFraction))
+            return TacticalStance.Withdraw;
+        return stance;
+    }
+
     public static TacticalStance StanceFor(float health, bool canFlee, double lossFraction)
     {
         if (canFlee && health < FleeBelow && lossFraction >= FleeLossFraction) return TacticalStance.Flee;

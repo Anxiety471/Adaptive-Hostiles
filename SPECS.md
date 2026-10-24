@@ -88,8 +88,8 @@ Example Jev movement answer (`movement.choice`): `"cell_142_87"`. The mod maps t
 | `AdaptiveHostiles.Mod` | RimWorld mod bootstrap, future patch hooks and adapters | Bootstrap only |
 | `RaidIncidentAdapter` | Eligible incident filtering, cached plans, roster and arrival | Core roster/cache, `RaidHistory` and RimWorld composition hook done (unverified in game) |
 | `OperativeRegistry` | Mark, upgrade, track and serialize Operatives | Core records, cooldowns, decision log done; RimWorld save hooks TODO |
-| `TacticalSampler` | Perceived state, feasible target/cell enumeration | Core `CandidateEnumerator` done over `ITacticalMap`; map adapter TODO |
-| `OperativeJobExecutor` | Revalidate candidate then assign legal native jobs | Core `OperativeOrderResolver` done; job assignment TODO |
+| `TacticalSampler` | Perceived state, feasible target/cell enumeration | Core `CandidateEnumerator` done; RimWorld map adapter and sampler written (`Mod/Tactics`, unverified in game) |
+| `OperativeJobExecutor` | Revalidate candidate then assign legal native jobs | Core `OperativeOrderResolver` and `OperativeTacticalLoop` done; Goto/attack job assignment and per-tick driver written (unverified in game) |
 | `JevScheduler` | Async throttling, timeouts, cancellation, cache and main-thread handoff | Done (`JevScheduler<T>`) |
 
 ## 6. Failure behavior

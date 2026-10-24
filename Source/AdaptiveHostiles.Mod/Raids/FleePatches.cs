@@ -1,6 +1,7 @@
 using AdaptiveHostiles.Mod.Tactics;
 using HarmonyLib;
 using Verse;
+using Verse.AI;
 using Verse.AI.Group;
 
 namespace AdaptiveHostiles.Mod.Raids;

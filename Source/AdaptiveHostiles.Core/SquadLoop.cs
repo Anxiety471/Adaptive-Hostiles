@@ -38,6 +38,9 @@ public sealed class SquadLoop
 
     public bool HasPending(string squadId) => _pending.ContainsKey(squadId);
 
+    /// <summary>Drops the in-flight request after an error but keeps the squad's phase.</summary>
+    public void Abort(string squadId) => _pending.Remove(squadId);
+
     public void Forget(string squadId)
     {
         _pending.Remove(squadId);

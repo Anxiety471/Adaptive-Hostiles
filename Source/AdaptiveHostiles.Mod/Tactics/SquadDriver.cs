@@ -80,9 +80,19 @@ public static class SquadDriver
             {
                 // A tactical bug must never break the raid; its pawns fall back to vanilla AI.
                 Log.Warning($"[Adaptive Hostiles] Squad loop failed for raid {raid.Id}: {e.Message}");
-                Loop.Forget(raid.Id);
+                Loop.Abort(raid.Id);
             }
         }
+    }
+
+    /// <summary>Nothing is standable or reachable, so every destination is rejected and the pawn is left alone.</summary>
+    private sealed class ClosedMap : ITacticalMap
+    {
+        public static readonly ClosedMap Instance = new();
+        public bool IsStandable(int x, int z) => false;
+        public bool IsReachable(int x, int z) => false;
+        public float CoverAt(int x, int z) => 0f;
+        public float ExposureAt(int x, int z) => 0f;
     }
 
     private static ulong SeedFor(string id)
@@ -178,7 +188,8 @@ public static class SquadDriver
 
         public ITacticalMap CurrentMap(string pawnId)
         {
-            var pawn = byId[pawnId];
+            // A raider can die or be removed while Jev's answer was in flight; revalidation must not throw.
+            if (!byId.TryGetValue(pawnId, out var pawn) || !pawn.Spawned) return ClosedMap.Instance;
             return OperativeSampler.MapFor(pawn, OperativeSampler.HostilePawns(pawn));
         }
 

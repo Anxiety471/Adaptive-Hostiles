@@ -75,11 +75,13 @@ public static class OperativeSampler
         if (p.InMentalState) block |= PawnBlock.MentalBreak;
 
         // Name checks keep this robust against duty/job defs renamed by DLC or other mods.
+        // Fleeing is deliberately not a block: the base game's flee state is ignored and Jev
+        // decides whether a raider leaves, so a vanilla exit duty must not freeze the tactical loop.
         var duty = p.mindState?.duty?.def?.defName ?? "";
-        if (duty.StartsWith("ExitMap") || duty.Contains("Flee") || duty.Contains("Steal") || duty.Contains("Kidnap"))
+        if (duty.Contains("Steal") || duty.Contains("Kidnap"))
             block |= PawnBlock.ScriptedDuty;
         var job = p.CurJob;
-        if (job != null && (job.playerForced || job.def.defName.Contains("Flee")))
+        if (job != null && job.playerForced)
             block |= PawnBlock.ForcedJob;
         return block;
     }

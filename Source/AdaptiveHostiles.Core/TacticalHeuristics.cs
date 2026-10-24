@@ -1,0 +1,64 @@
+namespace AdaptiveHostiles.Core;
+
+/// <summary>
+/// Local decision rules used when no model answers: press the attack from good cover, spread
+/// squad members over different approaches, pull back when badly hurt. Deterministic.
+/// </summary>
+public static class TacticalHeuristics
+{
+    public const float WoundedBelow = 0.35f;
+    public const float FleeBelow = 0.2f;
+    public const double FleeLossFraction = 0.5;
+
+    private static readonly string[] LeadOrder = { "firing_position", "advance", "cover", "flank", "retreat" };
+    private static readonly string[] FlankOrder = { "flank", "firing_position", "advance", "cover", "retreat" };
+    private static readonly string[] SafeOrder = { "retreat", "cover" };
+
+    public static OperativeDecision Decide(
+        IReadOnlyList<MovementCandidate> moves, IReadOnlyList<TargetCandidate> targets,
+        float health, int slot, string? focusTargetId = null, bool canFlee = false, double lossFraction = 0)
+    {
+        var stance = StanceFor(health, canFlee, lossFraction);
+        var dest = stance == TacticalStance.Flee ? null : PickDestination(moves, stance, slot);
+        return new OperativeDecision(dest?.Id ?? "hold", PickTarget(targets, focusTargetId), stance, false);
+    }
+
+    public static TacticalStance StanceFor(float health, bool canFlee, double lossFraction)
+    {
+        if (canFlee && health < FleeBelow && lossFraction >= FleeLossFraction) return TacticalStance.Flee;
+        return health < WoundedBelow ? TacticalStance.Withdraw : TacticalStance.Aggressive;
+    }
+
+    public static MovementCandidate? PickDestination(
+        IReadOnlyList<MovementCandidate> moves, TacticalStance stance, int slot)
+    {
+        var usable = moves.Where(c => c.Reachable).ToList();
+        if (usable.Count == 0) return null;
+        var order = stance == TacticalStance.Withdraw ? SafeOrder : slot % 2 == 0 ? LeadOrder : FlankOrder;
+        foreach (var purpose in order)
+        {
+            var best = Best(usable.Where(c => c.Purpose == purpose), slot);
+            if (best is not null) return best;
+        }
+        return Best(usable, slot);
+    }
+
+    // Slot offsets the pick so members with the same preference don't stack on one cell.
+    private static MovementCandidate? Best(IEnumerable<MovementCandidate> candidates, int slot)
+    {
+        var ranked = candidates
+            .OrderByDescending(c => c.Cover - c.Exposure)
+            .ThenBy(c => c.Distance)
+            .ThenBy(c => c.Id, StringComparer.Ordinal)
+            .ToList();
+        return ranked.Count == 0 ? null : ranked[Math.Min(slot / 2, ranked.Count - 1)];
+    }
+
+    public static string? PickTarget(IReadOnlyList<TargetCandidate> targets, string? focusTargetId)
+    {
+        var visible = targets.Where(t => t.Visible).ToList();
+        if (focusTargetId is not null && visible.Any(t => t.Id == focusTargetId)) return focusTargetId;
+        return visible.OrderByDescending(t => t.Threat).ThenBy(t => t.Id, StringComparer.Ordinal)
+            .FirstOrDefault()?.Id;
+    }
+}

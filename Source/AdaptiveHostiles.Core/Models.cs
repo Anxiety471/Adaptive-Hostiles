@@ -52,7 +52,8 @@ public sealed record OperativeSnapshot(
     IReadOnlyList<MovementCandidate> Destinations,
     IReadOnlyList<TargetCandidate> Targets);
 
-public enum TacticalStance { Defensive, Aggressive, Withdraw }
+/// <summary>Flee leaves the map and is only ever available to ordinary raiders, never the Operative.</summary>
+public enum TacticalStance { Defensive, Aggressive, Withdraw, Flee }
 
 // DestinationId references a locally generated MovementCandidate, or "hold".
 // TargetId references a locally generated TargetCandidate, or null.

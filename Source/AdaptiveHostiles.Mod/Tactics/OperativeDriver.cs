@@ -41,6 +41,7 @@ public static class OperativeDriver
         foreach (var record in registry.All.ToList())
         {
             if (!live.TryGetValue(record.PawnId, out var pawn)) continue;
+            if (SquadDriver.Controls(record.PawnId)) continue; // its raid's squad loop commands it
             if (!States.TryGetValue(record.PawnId, out var state))
                 States[record.PawnId] = state = new OperativeRuntimeState { LastHealth = pawn.health.summaryHealth.SummaryHealthPercent };
             try

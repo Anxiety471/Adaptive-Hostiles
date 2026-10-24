@@ -71,6 +71,27 @@ The initial raid decision asks independent typed Choice questions, `scale` (`rec
 
 Example Jev movement answer (`movement.choice`): `"cell_142_87"`. The mod maps this ID to a `Map`-valid `IntVec3(142, 0, 87)`. Model-supplied arbitrary x/z numbers are **never** trusted.
 
+### Squad command
+
+A raid that contains an Operative is commanded as one squad by Jev, not only the Operative.
+
+- One squad decision per cycle (same 120–300 tick cooldown and commitment as the Operative), never one call per pawn. The snapshot holds up to **12** controllable spawned raiders (the Operative first, then those nearest the enemy) with their own candidate cells and visible targets.
+- Questions: a squad `tactic` (`focus_fire`, `flank`, `suppress_push`, `regroup`), one squad `focus` target, and for each member a `move_i` Choice over that member's candidate IDs and a `stance_i` Choice. Answers are mapped back to the exact offered cells and revalidated per member before any job starts.
+- A member whose answer is invalid, or whose cell another member already took, uses the local heuristic for that member only. A wholly invalid squad answer uses the local squad fallback.
+- Members beyond the cap, blocked, downed or in a Jev-ordered exit are left to their current job / vanilla AI.
+
+### Aggression and survival
+
+- Default posture is aggressive: press the attack from the best-covered firing position, advance or flank cell; spread members over different approaches and focus fire.
+- Self-preservation: a member below **35%** health withdraws to cover or retreat cells.
+- Local fallback (no model): the same rules. Everyone is aggressive; wounded members withdraw.
+
+### Fleeing
+
+- The base game's flee check is disabled for squad-controlled raiders: their lord may not enter an exit toil, and panic/flee mental states are refused. A vanilla exit duty never blocks the tactical loop. Vanilla exit logic is allowed again after 30000 ticks of squad control so a raid cannot hang.
+- **The Operative never flees.** A model `flee` answer for it is downgraded to `withdraw`.
+- For ordinary raiders **Jev decides** whether to flee (`flee` stance, an exit-map job). Without a model answer the local fallback flees only a raider below **20%** health once at least **half** the raid is down or gone.
+
 ### Hard constraints
 
 - No invalid/off-map/unreachable cells, hostile fire friendly targets, or illegal Jobs.
@@ -87,6 +108,7 @@ Example Jev movement answer (`movement.choice`): `"cell_142_87"`. The mod maps t
 | `AdaptiveHostiles.Core` | Typed snapshots, client, decisions, result validation, fallbacks | Present |
 | `AdaptiveHostiles.Mod` | RimWorld mod bootstrap, future patch hooks and adapters | Bootstrap only |
 | `RaidIncidentAdapter` | Eligible incident filtering, cached plans, roster and arrival | Core roster/cache, `RaidHistory` and RimWorld composition hook done (unverified in game) |
+| `SquadPlanner` / `SquadLoop` | One coordinated Jev decision per raid squad; per-member revalidation; no-flee Operative | Core done and tested; `Mod/Tactics/SquadDriver` and `Raids/FleePatches` written (unverified in game) |
 | `OperativeRegistry` | Mark, upgrade, track and serialize Operatives | Core records, cooldowns, decision log done; RimWorld save hooks TODO |
 | `TacticalSampler` | Perceived state, feasible target/cell enumeration | Core `CandidateEnumerator` done; RimWorld map adapter and sampler written (`Mod/Tactics`, unverified in game) |
 | `OperativeJobExecutor` | Revalidate candidate then assign legal native jobs | Core `OperativeOrderResolver` and `OperativeTacticalLoop` done; Goto/attack job assignment and per-tick driver written (unverified in game) |

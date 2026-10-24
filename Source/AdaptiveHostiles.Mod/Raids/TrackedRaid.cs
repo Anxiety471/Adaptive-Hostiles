@@ -29,6 +29,23 @@ public sealed class TrackedRaid : IExposable
         this.colonists = colonists.Cast<Pawn?>().ToList();
     }
 
+    public string Id => $"{factionDefName}:{startTick}";
+    public long StartTick => startTick;
+    public IReadOnlyList<Pawn?> Raiders => raiders;
+
+    /// <summary>Counts for the squad planner; same classification as <see cref="TryFinish"/>.</summary>
+    public void Status(out int sent, out int down, out int retreated)
+    {
+        sent = raiders.Count;
+        down = 0;
+        retreated = 0;
+        foreach (var pawn in raiders)
+        {
+            if (pawn is null || pawn.Destroyed || pawn.Dead || pawn.Downed || pawn.IsPrisonerOfColony) down++;
+            else if (!pawn.Spawned) retreated++;
+        }
+    }
+
     public bool TryFinish(out RaidOutcome outcome)
     {
         outcome = null!;

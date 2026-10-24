@@ -8,6 +8,8 @@ public enum OrderKind
     Hold,
     /// <summary>Go to the Jev-chosen, revalidated cell.</summary>
     MoveTo,
+    /// <summary>Leave the map. Only issued to raiders that are allowed to flee.</summary>
+    Flee,
     /// <summary>Decision unusable; let vanilla AI / safe movement take over.</summary>
     VanillaFallback
 }
@@ -27,10 +29,22 @@ public static class OperativeOrderResolver
         ITacticalMap currentMap,
         PawnBlock block,
         OperativeRecord? record = null,
-        long tick = 0)
+        long tick = 0,
+        bool canFlee = true)
     {
         if (block != PawnBlock.None)
             return new OperativeOrder(OrderKind.None, offered.X, offered.Z, null, decision.Stance, $"blocked: {block}");
+
+        if (decision.Stance == TacticalStance.Flee)
+        {
+            if (!canFlee) decision = decision with { Stance = TacticalStance.Withdraw };
+            else
+            {
+                record?.Append(new DecisionLogEntry(
+                    tick, "flee", offered.X, offered.Z, null, TacticalStance.Flee, decision.IsModelDecision));
+                return new OperativeOrder(OrderKind.Flee, offered.X, offered.Z, null, TacticalStance.Flee, "flee");
+            }
+        }
 
         var targetId = decision.TargetId is not null &&
             offered.Targets.Any(t => t.Visible && t.Id == decision.TargetId)

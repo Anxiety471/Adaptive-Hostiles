@@ -23,6 +23,9 @@ public static class OperativeJobExecutor
             case OrderKind.VanillaFallback:
                 ReleaseToVanilla(pawn, state);
                 return;
+            case OrderKind.Flee:
+                Flee(pawn, state);
+                return;
         }
 
         var target = ResolveTarget(pawn, order.TargetId);
@@ -48,10 +51,24 @@ public static class OperativeJobExecutor
             Start(pawn, MakeAttack(pawn, target), state);
     }
 
+    /// <summary>Jev-ordered exit: walk to the best map edge spot and leave. Never used for the Operative.</summary>
+    private static void Flee(Pawn pawn, OperativeRuntimeState state)
+    {
+        if (!RCellFinder.TryFindBestExitSpot(pawn, out var spot, TraverseMode.ByPawn)) return;
+        var job = JobMaker.MakeJob(JobDefOf.Goto, spot);
+        job.exitMapOnArrival = true;
+        job.locomotionUrgency = LocomotionUrgency.Sprint;
+        Start(pawn, job, state);
+        state.Destination = null;
+        state.Target = null;
+        state.Fleeing = true;
+    }
+
     private static void Start(Pawn pawn, Job job, OperativeRuntimeState state)
     {
         pawn.jobs.StartJob(job, JobCondition.InterruptForced);
         state.Job = job;
+        state.Fleeing = false;
     }
 
     private static void ReleaseToVanilla(Pawn pawn, OperativeRuntimeState state)
@@ -99,4 +116,6 @@ public sealed class OperativeRuntimeState
     public Pawn? Target;
     public float LastHealth = 1f;
     public bool HadVisibleTarget;
+    /// <summary>True while a Jev-ordered exit job is running; the pawn is left alone until it ends.</summary>
+    public bool Fleeing;
 }

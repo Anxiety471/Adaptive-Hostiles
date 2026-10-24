@@ -1,5 +1,7 @@
 using AdaptiveHostiles.Core;
+using RimWorld;
 using Verse;
+using Verse.AI;
 
 namespace AdaptiveHostiles.Mod.Tactics;
 
@@ -29,7 +31,7 @@ public sealed class RimWorldTacticalMap(Pawn pawn, IReadOnlyList<IntVec3> threat
     {
         if (threats.Count == 0) return 0f;
         var c = new IntVec3(x, 0, z);
-        return RimWorld.CoverUtility.CalculateOverallBlockChance(c, Nearest(c), map);
+        return CoverUtility.CalculateOverallBlockChance(c, Nearest(c), map);
     }
 
     public float ExposureAt(int x, int z)

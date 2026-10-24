@@ -48,7 +48,7 @@ dotnet build Source/AdaptiveHostiles.Mod/AdaptiveHostiles.Mod.csproj -c Release 
 
 The mod project's build output is `1.7/Assemblies/`. Copy the **entire repository mod folder** (excluding Source, Tests, and .git if preferred) into RimWorld's local `Mods` directory and enable Harmony above Adaptive Hostiles. The mod replaces eligible hostile raid rosters (Harmony patches in `Source/AdaptiveHostiles.Mod/Raids`).
 
-For development, set `TYPESAFE_API_KEY` in your environment. The core client sends requests to TypeSafe's official `https://api.typesafe.ai/v1/systemone` endpoint with model `jev-latest`. **Never commit an API key.** The game-facing settings and background request scheduler have not yet been connected.
+For development, set `TYPESAFE_API_KEY` in your environment. The core client sends requests to TypeSafe's official `https://api.typesafe.ai/v1/systemone` endpoint with model `jev-latest`. Other decision models are selectable with `ADAPTIVE_HOSTILES_PROVIDER` (`jev`, `anthropic`, `openai`, `local`; default `auto` picks the first of `TYPESAFE_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`), with `ADAPTIVE_HOSTILES_MODEL` and `ADAPTIVE_HOSTILES_ENDPOINT` (any OpenAI-compatible server, e.g. a local Ollama) as overrides. **Never commit an API key.** The game-facing settings and background request scheduler have not yet been connected.
 
 ## Principles
 

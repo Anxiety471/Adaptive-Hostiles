@@ -5,8 +5,8 @@ namespace AdaptiveHostiles.Mod.Raids;
 /// <summary>
 /// Supplies a RaidPlan without ever blocking the game thread. A fresh cached Jev plan is
 /// used when present; otherwise the bounded local fallback is returned immediately and a
-/// background request warms the cache for the next raid. Without TYPESAFE_API_KEY only the
-/// fallback is used.
+/// background request warms the cache for the next raid. Which model answers is chosen by
+/// DecisionProviders (Jev, Anthropic, OpenAI-compatible); with none configured only the fallback is used.
 /// </summary>
 public static class JevPlanService
 {
@@ -16,16 +16,15 @@ public static class JevPlanService
     private static readonly DecisionCache<RaidPlan> Cache = new(CacheTtl);
     private static readonly JevScheduler<RaidPlan> Scheduler = new(isModelResult: p => p.IsModelDecision);
     private static readonly RaidPlanner Fallback = new();
-    /// <summary>One Jev client for every decision type; null without TYPESAFE_API_KEY.</summary>
+    /// <summary>One decision client for every decision type, chosen by DecisionProviders; null means local fallback.</summary>
     public static IJevClient? SharedClient { get; } = CreateClient();
 
     private static readonly RaidPlanner? Remote = SharedClient is null ? null : new RaidPlanner(SharedClient);
 
     private static IJevClient? CreateClient()
     {
-        var key = Environment.GetEnvironmentVariable("TYPESAFE_API_KEY");
-        if (string.IsNullOrWhiteSpace(key)) return null;
-        return new JevClient(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }, key);
+        return DecisionProviders.Create(
+            new HttpClient { Timeout = TimeSpan.FromSeconds(10) }, Environment.GetEnvironmentVariable);
     }
 
     public static bool JevEnabled => Remote is not null;

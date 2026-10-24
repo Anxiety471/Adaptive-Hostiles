@@ -14,7 +14,7 @@ public static class OperativeDriver
 {
     private const int PollInterval = 10;
 
-    private static readonly AdaptiveHostilesSettings Settings = RaidPatches.Settings;
+    private static readonly AdaptiveHostilesSettings Settings = RaidAdapter.Settings;
     private static readonly OperativeTacticalLoop Loop = new(
         new OperativePlanner(JevPlanService.SharedClient),
         JevPlanService.SharedClient is null ? null : new JevScheduler<OperativeDecision>(

@@ -480,6 +480,107 @@ await Check("squad: model withdraw/flee for healthy raiders is kept aggressive",
     await Task.CompletedTask;
 });
 
+await Check("turret range is flagged, penalised, and shown to the model", async () =>
+{
+    var list = CandidateEnumerator.Enumerate(new TurretMap(), 50, 50, new[] { (60, 50) });
+    Require(list.Any(c => c.InTurretRange) && list.Any(c => !c.InTurretRange), "turret flag missing");
+    var covered = new MovementCandidate("a", 1, 1, 0.9f, 0f, 5, "firing_position", true, InTurretRange: true);
+    var safer = new MovementCandidate("b", 2, 2, 0.6f, 0f, 5, "firing_position", true);
+    Require(TacticalHeuristics.PickDestination(new[] { covered, safer }, TacticalStance.Aggressive, 0)!.Id == "b", "walked into turret fire");
+    var client = new FakeClient("""
+        {"answers":{"movement":{"type":"choice","choice":"hold"},"target":{"type":"choice","choice":"turret_1"},"stance":{"type":"choice","choice":"aggressive"}}}
+        """);
+    var snap = Battlefield() with
+    {
+        Destinations = new[] { covered },
+        Targets = new[] { new TargetCandidate("turret_1", 140, 90, 0.9f, true, "turret", 30) }
+    };
+    var d = await new OperativePlanner(client).DecideAsync(snap);
+    Require(d.TargetId == "turret_1", "turret not targetable");
+    Require(JsonSerializer.Serialize(client.LastQuestions).Contains("HOSTILE TURRET"), "turret range not shown to model");
+});
+
+await Check("squad: melee push the weakest breach, ranged support behind it, in sync", async () =>
+{
+    var squad = BreachSquad();
+    var offline = await new SquadPlanner().DecideAsync(squad);
+    Require(offline.BreachId == "B2", "offline fallback did not pick the weakest breach");
+    Require(offline.Members["m1"].DestinationId == "cell_b2_push" && offline.Members["r1"].DestinationId == "cell_b2_support", "roles not synced");
+
+    var client = new FakeClient("""
+        {"answers":{"tactic":{"type":"choice","choice":"suppress_push"},"focus":{"type":"choice","choice":"pawn_1"},"breach":{"type":"choice","choice":"B1"},
+        "move_0":{"type":"choice","choice":"cell_b1_push"},"stance_0":{"type":"choice","choice":"aggressive"},
+        "move_1":{"type":"choice","choice":"cell_b1_push"},"stance_1":{"type":"choice","choice":"aggressive"}}}
+        """);
+    var d = await new SquadPlanner(client).DecideAsync(squad);
+    Require(d.IsModelDecision && d.BreachId == "B1", "model breach lost");
+    Require(d.Members["m1"].DestinationId == "cell_b1_push" && d.Members["m1"].IsModelDecision, "melee push rejected");
+    Require(d.Members["r1"].DestinationId != "cell_b1_push" && !d.Members["r1"].IsModelDecision, "ranged took the melee front");
+    Require(JsonSerializer.Serialize(client.LastQuestions!["breach"]).Contains("weakness"), "breach options missing");
+
+    var wrong = new FakeClient("""
+        {"answers":{"tactic":{"type":"choice","choice":"flank"},"focus":{"type":"choice","choice":"pawn_1"},"breach":{"type":"choice","choice":"B1"},
+        "move_0":{"type":"choice","choice":"cell_b2_push"},"stance_0":{"type":"choice","choice":"aggressive"},
+        "move_1":{"type":"choice","choice":"cell_b1_support"},"stance_1":{"type":"choice","choice":"aggressive"}}}
+        """);
+    var w = await new SquadPlanner(wrong).DecideAsync(squad);
+    Require(!w.Members["m1"].IsModelDecision, "melee sent to a different breach than the squad's");
+    Require(w.Members["r1"].DestinationId == "cell_b1_support", "valid ranged support rejected");
+    await Task.CompletedTask;
+});
+
+await Check("squad: raiders gather at staging cells and only go together on the signal", async () =>
+{
+    var far = StagedSquad(arrived: false);
+    var d = await new SquadPlanner().DecideAsync(far);
+    Require(d.Phase == SquadPhase.Gather, "attacked before gathering");
+    Require(d.Members["m1"].DestinationId == "cell_stage_m1" && d.Members["r1"].DestinationId == "cell_stage_r1", "not sent to staging cells");
+    Require(d.Members.Values.All(m => m.Stance == TacticalStance.Defensive), "attacked while gathering");
+
+    var go = await new SquadPlanner().DecideAsync(StagedSquad(arrived: true));
+    Require(go.Phase == SquadPhase.Breach && go.Members["m1"].DestinationId == "cell_push", "no go signal once staged");
+
+    var impatient = await new SquadPlanner(new FakeClient("""
+        {"answers":{"tactic":{"type":"choice","choice":"flank"},"focus":{"type":"choice","choice":"pawn_1"},"breach":{"type":"choice","choice":"B1"},"phase":{"type":"choice","choice":"press"},
+        "move_0":{"type":"choice","choice":"cell_push"},"stance_0":{"type":"choice","choice":"aggressive"},
+        "move_1":{"type":"choice","choice":"cell_support"},"stance_1":{"type":"choice","choice":"aggressive"}}}
+        """)).DecideAsync(far);
+    Require(impatient.Phase == SquadPhase.Gather && impatient.Members["m1"].DestinationId == "cell_stage_m1", "model overrode the gather gate");
+
+    Require((await new SquadPlanner().DecideAsync(far with { GatherCycles = SquadPlanner.MaxGatherCycles })).Phase == SquadPhase.Breach, "gather never times out");
+    Require((await new SquadPlanner().DecideAsync(far with { PreviousPhase = SquadPhase.Breach })).Phase == SquadPhase.Breach, "went back to gathering mid-assault");
+});
+
+await Check("squad loop: remembers the phase between cycles", async () =>
+{
+    var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());
+    var host = new FakeSquadHost { Snapshot = StagedSquad(arrived: false) };
+    loop.Tick("s", host, 100, 1);
+    Require(host.Applied[0].Order.X == 100, "gather order not applied");
+    host.Snapshot = StagedSquad(arrived: true);
+    loop.Tick("s", host, 1000, 1);
+    Require(host.Applied.Last().Order.X != 100 && host.Applied.Last().Id.Length > 0, "go signal not applied");
+    await Task.CompletedTask;
+});
+
+await Check("squad: ranged hold until the melee reach the breach; flee needs a lost raid and a nearly dead raider", async () =>
+{
+    var squad = StagedSquad(arrived: true) with { PreviousPhase = SquadPhase.Breach };
+    var hold = await new SquadPlanner().DecideAsync(squad);
+    Require(hold.Members["m1"].DestinationId == "cell_push", "melee not pushing");
+    Require(hold.Members["r1"].DestinationId == "cell_stage_r1", "ranged advanced before melee reached the breach");
+    // melee now standing on its breach cell
+    var landed = squad with { Members = squad.Members.Select(m => m.IsMelee
+        ? m with { Snapshot = m.Snapshot with { X = 150, Z = 90 } } : m).ToList() };
+    var go = await new SquadPlanner().DecideAsync(landed);
+    Require(go.Members["r1"].DestinationId == "cell_support", "ranged held after melee arrived");
+    Require((await new SquadPlanner().DecideAsync(squad with { BreachCycles = SquadPlanner.MaxMeleeLeadCycles })).Members["r1"].DestinationId == "cell_support", "ranged held forever");
+    Require(TacticalHeuristics.Guard(TacticalStance.Flee, 0.3f, 0.9) == TacticalStance.Withdraw, "hurt raider fled");
+    Require(TacticalHeuristics.Guard(TacticalStance.Flee, 0.1f, 0.2) == TacticalStance.Withdraw, "fled in a winning raid");
+    Require(TacticalHeuristics.Guard(TacticalStance.Flee, 0.1f, 0.6) == TacticalStance.Flee, "dying raider in a lost raid cannot flee");
+    await Task.CompletedTask;
+});
+
 await Check("squad loop: one sample and one resolve per member, cooldown honoured", async () =>
 {
     var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());
@@ -588,6 +689,33 @@ static SquadMember Member(string id, bool op, float health, params string[] cell
 static SquadSnapshot Squad(float raiderHealth = 1f, int sent = 2, int down = 0) => new("s",
     new[] { Member("op", true, 1f), Member("r1", false, raiderHealth) }, sent, down, 0);
 
+static SquadSnapshot BreachSquad()
+{
+    MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
+    var tgt = new[] { new TargetCandidate("pawn_1", 145, 86, 0.8f, true) };
+    OperativeSnapshot Snap(string id, params MovementCandidate[] cells) =>
+        new(id, 130, 90, 1f, "x", 2, cells, tgt);
+    var melee = Snap("m1", C("cell_b1_push", "breach_B1", 150), C("cell_b2_push", "breach_B2", 160), C("cell_free", "cover", 131));
+    var ranged = Snap("r1", C("cell_b1_support", "support_B1", 140), C("cell_b2_support", "support_B2", 141),
+        C("cell_b1_push", "breach_B1", 150), C("cell_free2", "cover", 132));
+    return new SquadSnapshot("s", new[] { new SquadMember(melee, false, true), new SquadMember(ranged, false, false) }, 2, 0, 0,
+        new[] { new BreachPoint("B1", 150, 90, 0.2f, 4, 1), new BreachPoint("B2", 160, 90, 0.9f, 0, 0) });
+}
+
+static SquadSnapshot StagedSquad(bool arrived)
+{
+    MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
+    var tgt = new[] { new TargetCandidate("pawn_1", 145, 86, 0.8f, true) };
+    OperativeSnapshot Snap(string id, string role, int stageX, int pushX) =>
+        new(id, arrived ? stageX : 40, 90, 1f, "x", 2,
+            new[] { C($"cell_stage_{id}", "stage_B1", stageX), C(role == "melee" ? "cell_push" : "cell_support", role == "melee" ? "breach_B1" : "support_B1", pushX) },
+            tgt);
+    var m = Snap("m1", "melee", 100, 150);
+    var r = Snap("r1", "ranged", 101, 140);
+    return new SquadSnapshot("s", new[] { new SquadMember(m, false, true), new SquadMember(r, false, false) }, 2, 0, 0,
+        new[] { new BreachPoint("B1", 150, 90, 0.9f, 0, 0) });
+}
+
 sealed class FakeClient(string json) : IJevClient
 {
     public IReadOnlyDictionary<string, object>? LastQuestions { get; private set; }
@@ -624,6 +752,15 @@ sealed class CaptureHandler : HttpMessageHandler
                 """, Encoding.UTF8, "application/json")
         };
     }
+}
+
+sealed class TurretMap : ITacticalMap
+{
+    public bool IsStandable(int x, int z) => true;
+    public bool IsReachable(int x, int z) => true;
+    public float CoverAt(int x, int z) => 0.5f;
+    public float ExposureAt(int x, int z) => 0.2f;
+    public bool InTurretRange(int x, int z) => x > 50;
 }
 
 sealed class GridMap : ITacticalMap

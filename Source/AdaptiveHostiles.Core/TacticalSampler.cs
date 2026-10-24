@@ -7,6 +7,8 @@ public interface ITacticalMap
     bool IsReachable(int x, int z);
     float CoverAt(int x, int z);
     float ExposureAt(int x, int z);
+    /// <summary>True when a hostile turret can shoot this cell.</summary>
+    bool InTurretRange(int x, int z) => false;
 }
 
 public static class CandidateEnumerator
@@ -39,8 +41,9 @@ public static class CandidateEnumerator
             var d1 = NearestThreat(x, z, threats);
             var purpose = Classify(cover, d0, d1, weaponRange, threats.Count > 0);
             var distance = (float)Math.Sqrt(dx * dx + dz * dz);
-            buckets[purpose].Add((cover - exposure, new MovementCandidate(
-                IdFor(x, z), x, z, cover, exposure, distance, purpose, true)));
+            var turret = map.InTurretRange(x, z);
+            buckets[purpose].Add((cover - exposure - (turret ? TacticalHeuristics.TurretPenalty : 0), new MovementCandidate(
+                IdFor(x, z), x, z, cover, exposure, distance, purpose, true, turret)));
         }
 
         foreach (var list in buckets.Values)
@@ -74,7 +77,8 @@ public static class CandidateEnumerator
     {
         if (!hasThreats) return cover >= 0.5f ? "cover" : "advance";
         if (d1 > d0 + 2) return "retreat";
-        if (d1 <= range && d1 >= range * 0.5) return "firing_position";
+        // Accuracy falls off fast with distance, so firing positions are short to medium range, not the edge of it.
+        if (d1 <= range * 0.65 && d1 >= range * 0.3) return "firing_position";
         if (cover >= 0.5f) return "cover";
         if (d1 < d0 - 2) return "advance";
         return "flank";

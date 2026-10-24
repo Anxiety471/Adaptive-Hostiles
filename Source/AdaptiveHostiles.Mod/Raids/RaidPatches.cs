@@ -15,13 +15,14 @@ public static class RaidAdapter
     public static readonly AdaptiveHostilesSettings Settings = new();
 
     // Exact type match excludes friendly raids, mech clusters, and custom/modded raid workers.
+    // The raid faction is resolved inside TryExecuteWorker, so it is checked in IsEligibleFaction.
     public static bool IsEligible(IncidentWorker worker, IncidentParms parms) =>
         worker.GetType() == typeof(IncidentWorker_RaidEnemy)
         && parms.target is Map
-        && parms.faction is { IsPlayer: false } faction
-        && faction.HostileTo(Faction.OfPlayer)
-        && !faction.def.hidden
         && parms.quest == null;
+
+    public static bool IsEligibleFaction(Faction? faction) =>
+        faction is { IsPlayer: false } && faction.HostileTo(Faction.OfPlayer) && !faction.def.hidden;
 
     public static ulong SeedFor(Map map, Faction faction)
     {
@@ -91,7 +92,8 @@ public static class Patch_PawnGroupMakerUtility_GeneratePawns
     public static bool Prefix(PawnGroupMakerParms parms, ref IEnumerable<Pawn> __result)
     {
         var scope = RaidScope.Current;
-        if (scope is null || parms.groupKind != PawnGroupKindDefOf.Combat || parms.faction != scope.Parms.faction)
+        if (scope is null || parms.groupKind != PawnGroupKindDefOf.Combat || parms.faction != scope.Parms.faction
+            || !RaidAdapter.IsEligibleFaction(parms.faction))
             return true;
         try
         {

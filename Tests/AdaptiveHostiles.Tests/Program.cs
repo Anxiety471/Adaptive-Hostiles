@@ -500,6 +500,50 @@ await Check("turret range is flagged, penalised, and shown to the model", async 
     Require(JsonSerializer.Serialize(client.LastQuestions).Contains("HOSTILE TURRET"), "turret range not shown to model");
 });
 
+await Check("breach route: the first wall on the path is the breach, the stand cell is just outside it", () =>
+{
+    var path = Enumerable.Range(0, 20).Select(i => (i, 5)).ToList();
+    var walls = new HashSet<(int, int)> { (8, 5), (12, 5) };
+    var site = BreachRoute.Resolve(path, (x, z) => walls.Contains((x, z)), (x, z) => true);
+    Require(site is { } s && s.HasWall && s.WallX == 8 && s.StandX == 7 && s.StandZ == 5, "breach is not the first wall on the path");
+    return Task.CompletedTask;
+});
+
+await Check("breach route: unusable stand cells move back along the path; a wall at the start has none", () =>
+{
+    var path = Enumerable.Range(0, 20).Select(i => (i, 5)).ToList();
+    var site = BreachRoute.Resolve(path, (x, z) => x == 8, (x, z) => x <= 5);
+    Require(site is { } s && s.WallX == 8 && s.StandX == 5, "stand cell did not step back to a usable cell");
+    Require(BreachRoute.Resolve(path, (x, z) => x == 0, (x, z) => true) is null, "a wall on the first cell has no stand cell");
+    Require(BreachRoute.Resolve(new List<(int, int)>(), (x, z) => true, (x, z) => true) is null, "empty path gave a site");
+    return Task.CompletedTask;
+});
+
+await Check("breach route: an open base has no wall and the stand cell is short of the defenders", () =>
+{
+    var path = Enumerable.Range(0, 20).Select(i => (i, 5)).ToList();
+    var site = BreachRoute.Resolve(path, (x, z) => false, (x, z) => true);
+    Require(site is { } s && !s.HasWall && s.StandX == 19 - BreachRoute.OpenSetback, "open approach cell wrong");
+    var shortPath = new List<(int, int)> { (0, 0), (1, 0) };
+    Require(BreachRoute.Resolve(shortPath, (x, z) => false, (x, z) => true) is { StandX: 0 }, "short open path did not clamp to the start");
+    return Task.CompletedTask;
+});
+
+await Check("breach route: pick keeps the weakest, spaced apart, one per wall, ids in order", () =>
+{
+    var picked = BreachRoute.Pick(new[]
+    {
+        new BreachPoint("", 13, 10, 0.95f, 0, 0, 14, 10),
+        new BreachPoint("", 10, 30, 0.9f, 0, 0, 11, 31),
+        new BreachPoint("", 40, 40, 0.7f, 0, 0, 11, 31),   // same wall as the 0.9 site
+        new BreachPoint("", 10, 10, 0.5f, 1, 0, 11, 10),   // too close to the 0.95 site
+        new BreachPoint("", 40, 10, 0.4f, 2, 1),
+    }, 3, 8);
+    Require(picked.Select(p => p.Id).SequenceEqual(new[] { "B1", "B2", "B3" }), "ids not sequential");
+    Require(picked[0].Weakness == 0.95f && picked[1].Weakness == 0.9f && picked[2].Weakness == 0.4f, "wrong picks or order");
+    return Task.CompletedTask;
+});
+
 await Check("squad: melee push the weakest breach, ranged support behind it, in sync", async () =>
 {
     var squad = BreachSquad();

@@ -209,7 +209,18 @@ public static class SquadDriver
         {
             if (!byId.TryGetValue(pawnId, out var pawn)) return;
             Log.Message($"[Adaptive Hostiles] squad {pawn.LabelShort}: {order.Kind} ({order.X},{order.Z}) {order.Stance} - {order.Reason}");
-            OperativeJobExecutor.Apply(pawn, order, StateOf(pawn));
+            OperativeJobExecutor.Apply(pawn, order, StateOf(pawn), PinnedWall(pawn, order.Reason));
+        }
+
+        // The wall or door of the breach point named in a breach_/support_ order, while it still stands.
+        private Thing? PinnedWall(Pawn pawn, string reason)
+        {
+            var us = reason.IndexOf('_');
+            if (us < 0 || !BreachMemory.TryGetValue(raid.Id, out var kept)) return null;
+            var id = reason[(us + 1)..];
+            var bp = kept.Points.FirstOrDefault(p => p.Id == id);
+            if (bp is null || bp.WallX < 0) return null;
+            return WallBreaker.BlockerAt(pawn, new IntVec3(bp.WallX, 0, bp.WallZ));
         }
     }
 }

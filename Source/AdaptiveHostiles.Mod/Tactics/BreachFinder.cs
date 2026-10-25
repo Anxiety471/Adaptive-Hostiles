@@ -13,9 +13,9 @@ public static class BreachFinder
 {
     public const int MaxPoints = 3;
     private const float StageDistance = 16f;
-    private const float MaxDefenderDistance = 20f;
     private const float DefenderSightRange = 25f;
-    private static readonly int[] Radii = { 6, 10, 14, 18 };
+    private const int MaxPathTargets = 5;
+    private const int MinSpacing = 8;
 
     public static IntVec3 DefenderCentre(IReadOnlyList<Pawn> defenders, IReadOnlyList<Building_Turret> turrets)
     {
@@ -24,38 +24,36 @@ public static class BreachFinder
         return new IntVec3((int)cells.Average(c => c.x), 0, (int)cells.Average(c => c.z));
     }
 
+    /// <summary>
+    /// One candidate per defender or turret the reference raider can path to: the stand cell and the first wall or door
+    /// on that shortest path (the same route vanilla sappers dig along). Open bases have no wall, so the candidate is a
+    /// cell a few steps short of the target.
+    /// </summary>
     public static List<BreachPoint> Find(
         Pawn reference, RimWorldTacticalMap map, IReadOnlyList<Pawn> defenders,
         IReadOnlyList<Building_Turret> turrets, IntVec3 centre)
     {
-        var scored = new List<(BreachPoint Point, float Dist)>();
-        if (!centre.IsValid) return new List<BreachPoint>();
-        for (var ri = 0; ri < Radii.Length; ri++)
-        for (var deg = 0; deg < 360; deg += 30)
+        var candidates = new List<BreachPoint>();
+        if (!centre.IsValid) return candidates;
+        var targets = defenders.Cast<Thing>().Take(MaxPathTargets).Concat(turrets.Take(MaxPathTargets));
+        foreach (var target in targets)
         {
-            var rad = deg * Math.PI / 180.0;
-            int x = centre.x + (int)Math.Round(Radii[ri] * Math.Cos(rad));
-            int z = centre.z + (int)Math.Round(Radii[ri] * Math.Sin(rad));
-            if (!map.IsStandable(x, z) || !map.IsReachable(x, z)) continue;
-            var cell = new IntVec3(x, 0, z);
-            if (!defenders.Any(d => d.Position.DistanceTo(cell) <= MaxDefenderDistance) &&
-                !turrets.Any(t => t.Position.DistanceTo(cell) <= MaxDefenderDistance)) continue;
+            var cells = WallBreaker.PathCells(reference, target);
+            var nodes = cells.Select(c => (c.x, c.z)).ToList();
+            var site = BreachRoute.Resolve(
+                nodes,
+                (x, z) => WallBreaker.BlockerAt(reference, new IntVec3(x, 0, z)) is not null,
+                (x, z) => map.IsStandable(x, z) && map.IsReachable(x, z));
+            if (site is not { } s) continue;
 
+            var cell = new IntVec3(s.StandX, 0, s.StandZ);
             var sees = defenders.Count(d => d.Position.DistanceTo(cell) <= DefenderSightRange &&
                                             GenSight.LineOfSight(d.Position, cell, reference.Map));
             var covered = turrets.Count(t => cell.DistanceTo(t.Position) <= OperativeSampler.TurretRange(t) + 1f);
             var weakness = 1f / (1 + sees + 2 * covered);
-            scored.Add((new BreachPoint("", x, z, weakness, sees, covered), cell.DistanceTo(reference.Position)));
+            candidates.Add(new BreachPoint("", s.StandX, s.StandZ, weakness, sees, covered, s.WallX, s.WallZ));
         }
-
-        var picked = new List<BreachPoint>();
-        foreach (var (point, _) in scored.OrderByDescending(s => s.Point.Weakness).ThenBy(s => s.Point.X).ThenBy(s => s.Point.Z))
-        {
-            if (picked.Any(p => Math.Abs(p.X - point.X) + Math.Abs(p.Z - point.Z) < 8)) continue;
-            picked.Add(point with { Id = $"B{picked.Count + 1}" });
-            if (picked.Count >= MaxPoints) break;
-        }
-        return picked;
+        return BreachRoute.Pick(candidates, MaxPoints, MinSpacing);
     }
 
     /// <summary>
@@ -69,13 +67,16 @@ public static class BreachFinder
         var result = new List<MovementCandidate>();
         foreach (var bp in points)
         {
+            // Outward direction: from the wall (or, in an open base, the defenders) through the breach cell.
+            var fromX = bp.WallX >= 0 ? bp.WallX : centre.x;
+            var fromZ = bp.WallX >= 0 ? bp.WallZ : centre.z;
             var anchorX = bp.X;
             var anchorZ = bp.Z;
             if (!isMelee)
             {
-                // Behind the melee push: continue the defenders-to-breach line outward.
-                var dx = bp.X - centre.x;
-                var dz = bp.Z - centre.z;
+                // Behind the melee push: continue the line outward.
+                var dx = bp.X - fromX;
+                var dz = bp.Z - fromZ;
                 var len = Math.Max(1f, (float)Math.Sqrt(dx * dx + dz * dz));
                 var back = Math.Clamp(range * 0.5f, 4f, 12f);
                 anchorX = bp.X + (int)Math.Round(dx / len * back);
@@ -85,8 +86,8 @@ public static class BreachFinder
             Add(result, pawn, map, FindCell(map, anchorX, anchorZ, slot, used), (isMelee ? "breach_" : "support_") + bp.Id, used);
 
             // Staging cell: further out on the raiders' side, where the squad gathers until the go signal.
-            var sx = bp.X - centre.x;
-            var sz = bp.Z - centre.z;
+            var sx = bp.X - fromX;
+            var sz = bp.Z - fromZ;
             var slen = Math.Max(1f, (float)Math.Sqrt(sx * sx + sz * sz));
             Add(result, pawn, map,
                 FindCell(map, bp.X + (int)Math.Round(sx / slen * StageDistance), bp.Z + (int)Math.Round(sz / slen * StageDistance), slot, used),

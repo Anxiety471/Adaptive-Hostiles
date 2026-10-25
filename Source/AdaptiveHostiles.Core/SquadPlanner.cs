@@ -15,7 +15,8 @@ public sealed record SquadMember(OperativeSnapshot Snapshot, bool IsOperative, b
 /// A place the colony is weakly defended, scored locally so Jev picks where to break through
 /// instead of walking into the open kill zone. Weakness is 0..1, higher is easier to break.
 /// </summary>
-public sealed record BreachPoint(string Id, int X, int Z, float Weakness, int Defenders, int Turrets);
+public sealed record BreachPoint(
+    string Id, int X, int Z, float Weakness, int Defenders, int Turrets, int WallX = -1, int WallZ = -1);
 
 public sealed record SquadSnapshot(
     string SquadId, IReadOnlyList<SquadMember> Members, int Sent, int Down, int Retreated,
@@ -312,7 +313,8 @@ public sealed class SquadPlanner(IJevClient? client = null)
     {
         var o = new Dictionary<string, string> { ["none"] = "No breach point; attack where the enemy is." };
         foreach (var b in points)
-            o[b.Id] = $"Breach at ({b.X},{b.Z}): weakness {b.Weakness:0.00}, {b.Defenders} defenders and {b.Turrets} turrets cover it.";
+            o[b.Id] = $"Breach at ({b.X},{b.Z}){(b.WallX >= 0 ? $" through the wall or door at ({b.WallX},{b.WallZ})" : "")}: " +
+                      $"weakness {b.Weakness:0.00}, {b.Defenders} defenders and {b.Turrets} turrets cover it.";
         return o;
     }
 

@@ -12,7 +12,8 @@ namespace AdaptiveHostiles.Mod.Tactics;
 /// </summary>
 public static class OperativeJobExecutor
 {
-    public static void Apply(Pawn pawn, OperativeOrder order, OperativeRuntimeState state)
+    /// <param name="pinnedWall">The wall or door of the breach point the order targets, if it still stands.</param>
+    public static void Apply(Pawn pawn, OperativeOrder order, OperativeRuntimeState state, Thing? pinnedWall = null)
     {
         if (!pawn.Spawned || pawn.Dead || pawn.Downed) return;
 
@@ -43,13 +44,15 @@ public static class OperativeJobExecutor
             Start(pawn, go, state);
             state.Destination = dest;
             // A raider pushing a breach point of a sealed base has to break the wall or door in its way.
+            // The raid's pinned breach wall comes first; once it is down, the next wall on the path takes over.
             if (order.Reason.StartsWith("breach_", StringComparison.Ordinal) && order.Stance != TacticalStance.Withdraw &&
-                WallBreaker.TryFindBlocker(pawn, out var wall))
-                pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, wall));
+                (pinnedWall ?? (WallBreaker.TryFindBlocker(pawn, out var wall) ? wall : null)) is { } breachWall)
+                pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, breachWall));
             // Ranged raiders backing a breach shoot the wall too instead of idling behind it.
             else if (order.Reason.StartsWith("support_", StringComparison.Ordinal) && target == null &&
-                     order.Stance != TacticalStance.Withdraw && !IsMelee(pawn) && WallBreaker.TryFindBlocker(pawn, out var cover))
-                pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, cover));
+                     order.Stance != TacticalStance.Withdraw && !IsMelee(pawn) &&
+                     (pinnedWall ?? (WallBreaker.TryFindBlocker(pawn, out var cover) ? cover : null)) is { } coverWall)
+                pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, coverWall));
             if (target != null && order.Stance != TacticalStance.Withdraw)
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, target));
             // Never leave the queue empty: when it runs out vanilla assault AI would walk the raider elsewhere.

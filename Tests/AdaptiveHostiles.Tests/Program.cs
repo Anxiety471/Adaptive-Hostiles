@@ -726,6 +726,46 @@ await Check("enemies: a non-colony hostile is offered as an enemy target and eng
     Require(d.FocusTargetId == "pawn_mech", "model focus on an enemy rejected");
 });
 
+await Check("corner ambush: ranged support stands beside the opening hugging the wall, not straight behind it, and prefers unseen wall-hugging cells", () =>
+{
+    // wall at (130,136), raiders' side is z > 136, stand cell (130,137)
+    var a0 = BreachRoute.SupportAnchor(130, 137, 130, 136, 30f, 0, true);
+    var a1 = BreachRoute.SupportAnchor(130, 137, 130, 136, 30f, 1, true);
+    Require(a0.X != 130 && a1.X != 130 && a0.X != a1.X, "support is in line with the opening or on one side only");
+    Require(a0.Z > 136 && a1.Z > 136, "support anchor is not outside the wall");
+    Require(Math.Abs(a0.X - 130) <= 3 && Math.Abs(a0.Z - 137) <= 3, "support is not within a few cells of the breach");
+    var open = BreachRoute.SupportAnchor(150, 90, 120, 90, 30f, 0, false);
+    Require(open.X < 150 + BreachRoute.SupportDistance(30f) + 1 && open.X > 150 && open.Z != 90, "open breach support not back and to the side");
+    Require(BreachRoute.CellScore(0f, false, 2) < BreachRoute.CellScore(0.6f, true, 0), "an exposed cell beat an unseen one");
+    Require(BreachRoute.CellScore(0.2f, true, 1) < BreachRoute.CellScore(0.2f, false, 1), "hugging a wall gave no bonus");
+    Require(BreachRoute.CellScore(0.2f, false, 0) < BreachRoute.CellScore(0.2f, false, 3), "a farther cell beat a nearer equal one");
+    return Task.CompletedTask;
+});
+
+await Check("press through: melee at an open breach go on to distinct press cells instead of holding at the gap, and keep going", async () =>
+{
+    MovementCandidate C(string id, string purpose, int x, int z) => new(id, x, z, 0.5f, 0.2f, 10, purpose, true);
+    var tgt = new[] { new TargetCandidate("pawn_1", 150, 100, 0.8f, true) };
+    SquadMember M(string id, int x, int z, int pressX, float hp = 1f) => new(new OperativeSnapshot(id, x, z, hp, "x", 1,
+        new[] { C($"{id}_s", "stage_B1", 100, 90), C($"{id}_b", "breach_B1", 130, 90), C($"{id}_p", "press_B1", pressX, 90) }, tgt), false, true);
+    SquadSnapshot Snap(params SquadMember[] ms) => new("s", ms, ms.Length, 0, 0, new[] { new BreachPoint("B1", 130, 90, 0.9f, 0, 0) },
+        SquadPhase.Breach);
+    // two melee standing at the gap, one still far away
+    var d = await new SquadPlanner().DecideAsync(Snap(M("m1", 130, 90, 134), M("m2", 129, 91, 135), M("m3", 100, 90, 136)));
+    Require(d.Members["m1"].DestinationId == "m1_p" && d.Members["m2"].DestinationId == "m2_p", "melee at the gap did not press on");
+    Require(d.Members["m3"].DestinationId == "m3_b", "a far melee should still come to the breach");
+    Require(d.Members["m1"].DestinationId != d.Members["m2"].DestinationId, "followers share one cell");
+    // already at the press cell, 4 cells from the breach: stays pressing, does not walk back to the gap
+    var d2 = await new SquadPlanner().DecideAsync(Snap(M("m1", 134, 90, 134)));
+    Require(d2.Members["m1"].DestinationId == "m1_p", "melee walked back from its press cell to the gap");
+    // a walled breach offers no press cell: melee keep their breach cell
+    var wall = Snap(new SquadMember(new OperativeSnapshot("m4", 130, 90, 1f, "x", 1,
+        new[] { C("m4_s", "stage_B1", 100, 90), C("m4_b", "breach_B1", 130, 90) }, tgt), false, true));
+    Require((await new SquadPlanner().DecideAsync(wall)).Members["m4"].DestinationId == "m4_b", "walled breach changed");
+    // a wounded melee still withdraws instead of pressing
+    Require((await new SquadPlanner().DecideAsync(Snap(M("m5", 130, 90, 134, 0.2f)))).Members["m5"].Stance == TacticalStance.Withdraw, "hurt melee pressed on");
+});
+
 await Check("withdraw: a hurt raider only goes to safe cells, never the breach or support cell, and holds when there is none", () =>
 {
     MovementCandidate C(string id, string purpose) => new(id, 1, 1, 0.5f, 0.2f, 10, purpose, true);

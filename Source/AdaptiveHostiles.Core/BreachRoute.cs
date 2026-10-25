@@ -17,6 +17,32 @@ public static class BreachRoute
     /// <summary>Ranged support stands this close behind the breach cell: within a few cells of the melee and in weapon range of the wall.</summary>
     public static float SupportDistance(float range) => Math.Clamp(range * 0.3f, 3f, 6f);
 
+    /// <summary>How far to the side of the opening ranged support stands, hugging the wall face.</summary>
+    public const float SideOffset = 2f;
+
+    /// <summary>
+    /// Corner ambush: ranged support stands beside the opening, one step out and two cells along the wall face, not
+    /// straight behind it in the defenders' line of fire. Alternate raiders take alternate sides. Without a wall there is
+    /// nothing to hug, so the anchor is <see cref="SupportDistance"/> back and to the side.
+    /// </summary>
+    public static (int X, int Z) SupportAnchor(int standX, int standZ, int fromX, int fromZ, float range, int slot, bool hasWall)
+    {
+        var dx = standX - fromX;
+        var dz = standZ - fromZ;
+        var len = Math.Max(1f, (float)Math.Sqrt(dx * dx + dz * dz));
+        float ox = dx / len, oz = dz / len;
+        float lx = -oz, lz = ox;
+        var side = slot % 2 == 0 ? 1 : -1;
+        var back = hasWall ? 1f : SupportDistance(range);
+        return (standX + (int)Math.Round(ox * back + lx * side * SideOffset),
+                standZ + (int)Math.Round(oz * back + lz * side * SideOffset));
+    }
+
+    /// <summary>
+    /// Lower is better: a cell the defenders cannot see (exposure 0..1), hugging a wall or corner, close to the anchor.
+    /// </summary>
+    public static float CellScore(float exposure, bool hugsWall, int ring) => exposure + 0.1f * ring - (hugsWall ? 0.15f : 0f);
+
     /// <summary>True when (x,z) is on the raiders' side of the breach wall: further out than the wall along the stand direction.</summary>
     public static bool OutsideWall(int wallX, int wallZ, int standX, int standZ, int x, int z) =>
         (x - wallX) * (standX - wallX) + (z - wallZ) * (standZ - wallZ) > 0;

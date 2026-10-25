@@ -79,16 +79,22 @@ public static class BreachFinder
             var wallSide = bp.WallX >= 0 ? (Func<int, int, bool>)((x, z) => BreachRoute.OutsideWall(bp.WallX, bp.WallZ, bp.X, bp.Z, x, z)) : null;
             if (!isMelee)
             {
-                // Behind the melee push: continue the line outward.
-                var dx = bp.X - fromX;
-                var dz = bp.Z - fromZ;
-                var len = Math.Max(1f, (float)Math.Sqrt(dx * dx + dz * dz));
-                var back = BreachRoute.SupportDistance(range);
-                anchorX = bp.X + (int)Math.Round(dx / len * back);
-                anchorZ = bp.Z + (int)Math.Round(dz / len * back);
+                // Beside the opening, hugging the wall, rather than straight behind it in the defenders' line of fire.
+                (anchorX, anchorZ) = BreachRoute.SupportAnchor(bp.X, bp.Z, fromX, fromZ, range, slot, bp.WallX >= 0);
             }
 
-            Add(result, pawn, map, FindCell(map, anchorX, anchorZ, slot, used, wallSide), (isMelee ? "breach_" : "support_") + bp.Id, used);
+            Add(result, pawn, map, isMelee ? FindCell(map, anchorX, anchorZ, slot, used, wallSide) : FindCover(map, anchorX, anchorZ, slot, used, wallSide),
+                (isMelee ? "breach_" : "support_") + bp.Id, used);
+            // An open breach has no wall to break: melee also get a press cell past the opening toward the defenders, one per raider.
+            if (isMelee && bp.WallX < 0 && centre.IsValid)
+            {
+                var px = centre.x - bp.X;
+                var pz = centre.z - bp.Z;
+                var plen = Math.Max(1f, (float)Math.Sqrt(px * px + pz * pz));
+                var ahead = Math.Min(3f + slot, Math.Max(3f, plen - 1f));
+                Add(result, pawn, map, FindCell(map, bp.X + (int)Math.Round(px / plen * ahead), bp.Z + (int)Math.Round(pz / plen * ahead), slot, used, null),
+                    "press_" + bp.Id, used);
+            }
             // A stalled assault sends ranged raiders to open a wall too, so they are offered the breach cell as well.
             if (!isMelee)
                 Add(result, pawn, map, FindCell(map, bp.X, bp.Z, slot, used, wallSide), "breach_" + bp.Id, used);
@@ -98,7 +104,7 @@ public static class BreachFinder
             var sz = bp.Z - fromZ;
             var slen = Math.Max(1f, (float)Math.Sqrt(sx * sx + sz * sz));
             Add(result, pawn, map,
-                FindCell(map, bp.X + (int)Math.Round(sx / slen * StageDistance), bp.Z + (int)Math.Round(sz / slen * StageDistance), slot, used, wallSide),
+                FindCover(map, bp.X + (int)Math.Round(sx / slen * StageDistance), bp.Z + (int)Math.Round(sz / slen * StageDistance), slot, used, wallSide),
                 "stage_" + bp.Id, used);
         }
         return result;
@@ -114,6 +120,27 @@ public static class BreachFinder
         result.Add(new MovementCandidate(
             CandidateEnumerator.IdFor(x, z), x, z, map.CoverAt(x, z), map.ExposureAt(x, z),
             (float)new IntVec3(x, 0, z).DistanceTo(pawn.Position), purpose, true, map.InTurretRange(x, z)));
+    }
+
+    // The best free cell within 3 of the anchor by BreachRoute.CellScore: out of the defenders' sight, hugging a wall or corner.
+    private static (int, int)? FindCover(
+        RimWorldTacticalMap map, int ax, int az, int slot, HashSet<(int, int)> used, Func<int, int, bool>? allowed)
+    {
+        (int, int)? best = null;
+        var bestScore = float.MaxValue;
+        for (var r = 0; r <= 3; r++)
+        for (var dx = -r; dx <= r; dx++)
+        for (var dz = -r; dz <= r; dz++)
+        {
+            if (Math.Max(Math.Abs(dx), Math.Abs(dz)) != r) continue;
+            int x = ax + dx, z = az + dz;
+            if (used.Contains((x, z)) || (allowed is not null && !allowed(x, z)) || !map.IsStandable(x, z) || !map.IsReachable(x, z)) continue;
+            var score = BreachRoute.CellScore(map.ExposureAt(x, z), map.HugsWall(x, z), r);
+            if (score >= bestScore) continue;
+            best = (x, z);
+            bestScore = score;
+        }
+        return best ?? FindCell(map, ax, az, slot, used, allowed);
     }
 
     // Nearest free standable, reachable cell around the anchor; slot rotates the search so members spread.

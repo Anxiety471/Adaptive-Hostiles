@@ -190,7 +190,7 @@ public static class SquadDriver
             var now = Find.TickManager.TicksGame;
             if (!Watches.TryGetValue(raid.Id, out var watch)) Watches[raid.Id] = watch = new RaidWatch();
             var lostNew = RecordLosses(watch, now);
-            if (!BreachMemory.TryGetValue(raid.Id, out var kept) || now - kept.Tick > BreachKeepTicks || kept.Points.Count == 0 || lostNew)
+            if (!BreachMemory.TryGetValue(raid.Id, out var kept) || now - kept.Tick > BreachKeepTicks || kept.Points.Count == 0 || lostNew || WallFell(kept.Points, lead.Map))
                 BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre, Danger, now));
             var breaches = kept.Points;
             if (kept.Tick == now)
@@ -222,6 +222,10 @@ public static class SquadDriver
             return new SquadSnapshot(raid.Id, squad, sent, down, retreated, breaches,
                 DangerZones: Danger.Hotspots(now, 5), DamageDealt: MeasureDamage(watch, defenders, breaches), Defenders: defenders.Count);
         }
+
+        // A pinned breach whose wall or door has been destroyed is stale: the squad has to find the next one on the path.
+        private static bool WallFell(List<BreachPoint> points, Map map) =>
+            points.Any(b => b.WallX >= 0 && new IntVec3(b.WallX, 0, b.WallZ).GetEdifice(map) is null);
 
         // Raiders that went down or died since the last cycle mark their cell as dangerous. True when there was one.
         private bool RecordLosses(RaidWatch watch, int now)

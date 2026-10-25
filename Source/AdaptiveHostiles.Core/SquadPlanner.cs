@@ -60,6 +60,8 @@ public sealed class SquadPlanner(IJevClient? client = null)
     public const float StagedWithin = 4f;
     /// <summary>After this many gather cycles the squad goes anyway, so a blocked member cannot stall the raid.</summary>
     public const int MaxGatherCycles = 4;
+    /// <summary>A melee raider this close to its breach cell (or its press cell) is sent on through the opening.</summary>
+    public const float PressWithin = 3f;
     /// <summary>No more raiders than this are ordered onto one target; the rest take their next best.</summary>
     public const int MaxPerTarget = 3;
 
@@ -205,7 +207,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 var role = move is not null && m.Moves.TryGetValue(move, out var picked) ? picked.Purpose : "";
                 var retreating = stance is TacticalStance.Withdraw or TacticalStance.Flee;
                 var valid = move is not null && stance is not null && RoleAllows(m.Member.IsMelee, role, Effective(m.Member, breachId)) &&
-                            !(retreating && (role.StartsWith("breach_", StringComparison.Ordinal) || role.StartsWith("support_", StringComparison.Ordinal))) &&
+                            !(retreating && (role.StartsWith("breach_", StringComparison.Ordinal) || role.StartsWith("support_", StringComparison.Ordinal) || role.StartsWith("press_", StringComparison.Ordinal))) &&
                             (move == "hold" || (m.Moves.ContainsKey(move) && !taken.Contains(move)));
                 if (valid && move != "hold") taken.Add(move!);
                 var chosen = valid
@@ -230,6 +232,34 @@ public sealed class SquadPlanner(IJevClient? client = null)
         _ => null
     };
 
+    /// <summary>
+    /// Melee that reached an open breach do not stand at it: they go on to their own press cell past the opening, toward the
+    /// defenders, so they stream through one after another instead of clogging a narrow gap. A raider already at its press
+    /// cell stays on it, so the order does not flip back to the breach cell.
+    /// </summary>
+    private static SquadDecision PressThrough(SquadDecision decision, SquadSnapshot squad, string breachId)
+    {
+        var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        foreach (var m in squad.Members.Where(m => m.IsMelee))
+        {
+            var id = Effective(m, breachId);
+            if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+            var press = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "press_" + id);
+            var breach = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "breach_" + id);
+            if (press is null) continue;
+            if (Near(m, press) || (breach is not null && Near(m, breach)))
+                members[m.Snapshot.PawnId] = d with { DestinationId = press.Id, Stance = TacticalStance.Aggressive };
+        }
+        return decision with { Members = members };
+    }
+
+    private static bool Near(SquadMember m, MovementCandidate c)
+    {
+        var dx = m.Snapshot.X - c.X;
+        var dz = m.Snapshot.Z - c.Z;
+        return Math.Sqrt(dx * dx + dz * dz) <= PressWithin;
+    }
+
     private static MovementCandidate? StageCell(SquadMember m, string? breachId) =>
         m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "stage_" + breachId);
 
@@ -253,7 +283,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
         var ready = squad.Members.Count == 0 || staged >= Math.Ceiling(squad.Members.Count * ReadyFraction)
                     || squad.PreviousPhase != SquadPhase.Gather || squad.GatherCycles >= MaxGatherCycles;
         var phase = ready ? (decision.Phase == SquadPhase.Gather ? SquadPhase.Breach : decision.Phase) : SquadPhase.Gather;
-        if (phase != SquadPhase.Gather) return decision with { Phase = phase };
+        if (phase != SquadPhase.Gather) return PressThrough(decision with { Phase = phase }, squad, breachId);
 
         // Gathering: every healthy raider goes to its staging cell and holds fire discipline until the signal.
         var held = new Dictionary<string, OperativeDecision>(StringComparer.Ordinal);
@@ -276,6 +306,8 @@ public sealed class SquadPlanner(IJevClient? client = null)
     {
         if (purpose.StartsWith("stage_", StringComparison.Ordinal))
             return breachId is not null && purpose.EndsWith("_" + breachId, StringComparison.Ordinal);
+        if (purpose.StartsWith("press_", StringComparison.Ordinal))
+            return isMelee && breachId is not null && purpose.EndsWith("_" + breachId, StringComparison.Ordinal);
         if (purpose.StartsWith("breach_", StringComparison.Ordinal) || purpose.StartsWith("support_", StringComparison.Ordinal))
         {
             if (breachId is null || !purpose.EndsWith("_" + breachId, StringComparison.Ordinal)) return false;

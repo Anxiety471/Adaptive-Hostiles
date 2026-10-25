@@ -31,6 +31,9 @@ public sealed class SquadLoop
     private readonly Dictionary<string, (SquadPhase Phase, int GatherCycles, int BreachCycles)> _phase = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StallTracker> _stall = new(StringComparer.Ordinal);
     private readonly Dictionary<string, HashSet<string>> _withdrawn = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _gatherStart = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _callStart = new(StringComparer.Ordinal);
+    private readonly List<double> _latencyMs = new();
     private readonly Dictionary<string, string> _chosen = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (IReadOnlyList<string> PawnIds, string BreachKey)> _split = new(StringComparer.Ordinal);
 
@@ -51,6 +54,7 @@ public sealed class SquadLoop
     {
         _pending.Remove(squadId);
         _phase.Remove(squadId);
+        _gatherStart.Remove(squadId);
         _stall.Remove(squadId);
         _chosen.Remove(squadId);
         _withdrawn.Remove(squadId);
@@ -61,6 +65,7 @@ public sealed class SquadLoop
     {
         _pending.Clear();
         _phase.Clear();
+        _gatherStart.Clear();
         _stall.Clear();
         _chosen.Clear();
         _withdrawn.Clear();
@@ -76,6 +81,7 @@ public sealed class SquadLoop
             if (_scheduler!.TryTake(squadId, _maxResultAge, out var decision))
             {
                 _pending.Remove(squadId);
+                RecordLatency(host, squadId, decision.IsModelDecision);
                 Finish(squadId, host, decision, pending.Offered, tick, seed);
             }
             else if (tick - pending.Tick > (long)(_settings.NetworkDeadline.TotalSeconds * 60) + 120)
@@ -91,7 +97,7 @@ public sealed class SquadLoop
         var snapshot = host.Sample();
         if (snapshot.Members.Count == 0) return;
         if (_phase.TryGetValue(squadId, out var known))
-            snapshot = snapshot with { PreviousPhase = known.Phase, GatherCycles = known.GatherCycles, BreachCycles = known.BreachCycles };
+            snapshot = snapshot with { PreviousPhase = known.Phase, GatherCycles = GatherSeconds(squadId, tick), BreachCycles = known.BreachCycles };
         snapshot = Tactics(squadId, host, snapshot, _phase.ContainsKey(squadId), known.Phase);
         if (_scheduler is null)
         {
@@ -101,6 +107,7 @@ public sealed class SquadLoop
         else if (_scheduler.TryBegin(squadId, ct => _planner.DecideAsync(snapshot, ct)))
         {
             _pending[squadId] = (snapshot, tick);
+            _callStart[squadId] = System.Diagnostics.Stopwatch.GetTimestamp();
         }
     }
 
@@ -120,10 +127,28 @@ public sealed class SquadLoop
         if (decision.BreachId is not null) _chosen[squadId] = decision.BreachId;
         if (!_phase.ContainsKey(squadId) || prior.Phase != decision.Phase)
             host.Callout(IntentLog.Describe(decision.Phase, decision, offered));
+        if (decision.Phase == SquadPhase.Gather) _gatherStart.TryAdd(squadId, tick); else _gatherStart.Remove(squadId);
         var gather = decision.Phase == SquadPhase.Gather ? prior.GatherCycles + 1 : 0;
         var breach = decision.Phase == SquadPhase.Gather ? 0 : prior.BreachCycles + 1;
         _phase[squadId] = (decision.Phase, gather, breach);
         OperativeRegistry.ScheduleNext(host.Timing, tick, seed, _settings);
+    }
+
+    // Gathering is timed in seconds of game time (60 ticks) from the first gather order, not in cycles, so the one-second cadence
+    // and a slow model answer both force the go after the same wait.
+    private int GatherSeconds(string squadId, long tick) =>
+        _gatherStart.TryGetValue(squadId, out var start) ? (int)((tick - start) / 60) : 0;
+
+    // Request start to answer applied, in milliseconds; the median and the 95th percentile go to the mod log every 20 calls.
+    private void RecordLatency(ISquadHost host, string squadId, bool model)
+    {
+        if (!_callStart.Remove(squadId, out var start)) return;
+        _latencyMs.Add(System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds);
+        if (_latencyMs.Count < 20) return;
+        var sorted = _latencyMs.OrderBy(x => x).ToList();
+        host.Callout($"decision latency over {sorted.Count} calls: median {sorted[sorted.Count / 2]:0} ms, p95 {sorted[(int)(sorted.Count * 0.95)]:0} ms" +
+                     (model ? "" : " (local fallback answered the last call)"));
+        _latencyMs.Clear();
     }
 
     // A raider that withdrew stays withdrawn until it has recovered, so a hurt melee raider does not walk back and forth.

@@ -94,17 +94,27 @@ public static class BreachFinder
                 // Far out the first stop is the edge of the exposed zone (25 cells from the role cell), so the walk in is not slowed.
                 var step = hlen > BreachRoute.HopFar + BreachRoute.HopStep ? hlen - BreachRoute.HopFar : BreachRoute.HopStep;
                 if (hlen > BreachRoute.HopTrigger)
-                    Add(result, pawn, map, FindCover(map, pawn.Position.x + (int)Math.Round(hx / hlen * step),
-                        pawn.Position.z + (int)Math.Round(hz / hlen * step), slot, used, null), "hop_" + bp.Id, used);
+                    Add(result, pawn, map, Pinned(pawn, map, "hop_" + bp.Id, () => FindCover(map, pawn.Position.x + (int)Math.Round(hx / hlen * step),
+                        pawn.Position.z + (int)Math.Round(hz / hlen * step), slot, used, null)), "hop_" + bp.Id, used);
             }
             // An open breach has no wall to break: melee also get a press cell past the opening toward the defenders, one per raider.
-            if (isMelee && bp.WallX < 0 && centre.IsValid)
+            // The press cell is measured from the raider itself once it is through, so the push keeps going each cycle until
+            // the raiders stand on the defenders instead of idling a few cells past the opening. Ranged stop short of them.
+            if (bp.WallX < 0 && centre.IsValid)
             {
-                var px = centre.x - bp.X;
-                var pz = centre.z - bp.Z;
+                var pdx = centre.x - pawn.Position.x;
+                var pdz = centre.z - pawn.Position.z;
+                var bdx = centre.x - bp.X;
+                var bdz = centre.z - bp.Z;
+                var through = pdx * pdx + pdz * pdz < bdx * bdx + bdz * bdz;
+                var ox = through ? pawn.Position.x : bp.X;
+                var oz = through ? pawn.Position.z : bp.Z;
+                var px = centre.x - ox;
+                var pz = centre.z - oz;
                 var plen = Math.Max(1f, (float)Math.Sqrt(px * px + pz * pz));
-                var ahead = Math.Min(3f + slot, Math.Max(3f, plen - 1f));
-                Add(result, pawn, map, FindCell(map, bp.X + (int)Math.Round(px / plen * ahead), bp.Z + (int)Math.Round(pz / plen * ahead), slot, used, null),
+                var stop = isMelee ? 2f : 7f;
+                var ahead = Math.Min((through ? 8f : 3f) + slot, Math.Max(2f, plen - stop));
+                Add(result, pawn, map, Pinned(pawn, map, "press_" + bp.Id, () => FindCell(map, ox + (int)Math.Round(px / plen * ahead), oz + (int)Math.Round(pz / plen * ahead), slot, used, null)),
                     "press_" + bp.Id, used);
             }
             // A stalled assault sends ranged raiders to open a wall too, so they are offered the breach cell as well.
@@ -121,6 +131,24 @@ public static class BreachFinder
         }
         return result;
     }
+
+    // Hop and press cells stay pinned to a raider until it gets there, so a one-second cadence does not make them drift each cycle.
+    private static readonly Dictionary<string, (int X, int Z, int Tick)> Pins = new();
+    private const int PinTicks = 600;
+
+    private static (int, int)? Pinned(Pawn pawn, RimWorldTacticalMap map, string purpose, Func<(int, int)?> pick)
+    {
+        var key = pawn.ThingID + purpose;
+        var now = Verse.Find.TickManager.TicksGame;
+        if (Pins.TryGetValue(key, out var pin) && now - pin.Tick < PinTicks && map.IsStandable(pin.X, pin.Z) &&
+            new IntVec3(pin.X, 0, pin.Z).DistanceTo(pawn.Position) > 2.5f)
+            return (pin.X, pin.Z);
+        var cell = pick();
+        if (cell is { } c) Pins[key] = (c.Item1, c.Item2, now); else Pins.Remove(key);
+        return cell;
+    }
+
+    public static void ResetPins() => Pins.Clear();
 
     private static void Add(
         List<MovementCandidate> result, Pawn pawn, RimWorldTacticalMap map, (int, int)? cell, string purpose,

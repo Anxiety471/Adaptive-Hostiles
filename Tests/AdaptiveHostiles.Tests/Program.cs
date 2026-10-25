@@ -1,3 +1,4 @@
+using static AdaptiveHostiles.Core.StallTracker;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -577,22 +578,23 @@ await Check("B1 danger memory: marks fade over a day, penalise nearby cells and 
     Require(JsonSerializer.Serialize(client.LastQuestions!["breach"]).Contains("recently fell"), "danger missing from the breach options");
 });
 
-await Check("B2 stall: three idle cycles set the breach aside; all stalled means ranged open a second wall", () =>
+await Check("B2 stall: idle cycles set the breach aside; all stalled means ranged open a second wall", () =>
 {
     var t = new StallTracker();
     var keys = new[] { "1,1", "2,2" };
     Require(!t.Observe("1,1", 0, 30, keys), "first look stalled");
-    Require(!t.Observe("1,1", 0, 30, keys) && !t.Observe("1,1", 0, 30, keys), "stalled too early");
-    Require(t.Observe("1,1", 0, 30, keys), "three idle cycles did not stall");
+    bool Idle(string k, int n, double dist) { var any = false; for (var i = 0; i < n; i++) any |= t.Observe(k, 0, dist, keys); return any; }
+    Require(!Idle("1,1", StallCycles - 1, 30), "stalled too early");
+    Require(t.Observe("1,1", 0, 30, keys), "idle cycles did not stall");
     Require(t.IsExcluded("1,1") && !t.RangedOpensWall, "stalled breach not set aside");
     Require(!t.Observe("2,2", 0, 30, keys), "new breach inherited the idle count");
     Require(!t.Observe("2,2", 0.2, 30, keys) && !t.Observe("2,2", 0, 20, keys), "progress counted as idle");
-    Require(!t.Observe("2,2", 0, 20, keys) && !t.Observe("2,2", 0, 20, keys), "idle count did not restart after progress");
+    Require(!Idle("2,2", StallCycles - 1, 20), "idle count did not restart after progress");
     Require(t.Observe("2,2", 0, 20, keys) && t.RangedOpensWall, "second stall did not open the second wall");
     Require(!t.IsExcluded("1,1"), "exclusions kept after every point stalled");
     var pts = new[] { new BreachPoint("B1", 1, 1, 1f, 0, 0), new BreachPoint("B2", 2, 2, 0.5f, 0, 0) };
     var t2 = new StallTracker();
-    for (var i = 0; i < 4; i++) t2.Observe("1,1", 0, 30, new[] { "1,1", "2,2" });
+    for (var i = 0; i <= StallCycles; i++) t2.Observe("1,1", 0, 30, new[] { "1,1", "2,2" });
     Require(t2.Available(pts, b => $"{b.X},{b.Z}").Select(b => b.Id).SequenceEqual(new[] { "B2" }), "stalled point still offered");
     return Task.CompletedTask;
 });
@@ -601,7 +603,7 @@ await Check("B2 squad loop: a stalled assault is called out in the log and range
 {
     var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());
     var host = new FakeSquadHost { Snapshot = StagedSquad(arrived: true) };
-    for (var i = 0; i < 6; i++) loop.Tick("s", host, 1000 + i * 1000, 1);
+    for (var i = 0; i < StallCycles * 2 + 4; i++) loop.Tick("s", host, 1000 + i * 1000, 1);
     Require(host.Callouts.Any(c => c.Contains("stalled")), "no stall callout");
     Require(host.Callouts.Any(c => c.Contains("second wall")), "ranged not told to open a second wall");
     return Task.CompletedTask;
@@ -838,7 +840,7 @@ await Check("ranged: shoot point blank instead of kiting, and move up at an open
     MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
     SquadSnapshot Snap(int rx, TargetCandidate[] tgt, bool walled)
     {
-        var r = new OperativeSnapshot("r1", rx, 90, 1f, "x", 2, new[] { C("r_s", "support_B1", 130), C("r_b", "breach_B1", 140), C("r_st", "stage_B1", 100) }, tgt);
+        var r = new OperativeSnapshot("r1", rx, 90, 1f, "x", 2, new[] { C("r_s", "support_B1", 130), C("r_b", "breach_B1", 140), C("r_p", "press_B1", 150), C("r_st", "stage_B1", 100) }, tgt);
         return new SquadSnapshot("s", new[] { new SquadMember(r, false, false) }, 1, 0, 0,
             new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0, walled ? 139 : -1, walled ? 90 : -1) }, SquadPhase.Breach);
     }
@@ -847,7 +849,7 @@ await Check("ranged: shoot point blank instead of kiting, and move up at an open
     var d = await new SquadPlanner().DecideAsync(Snap(130, new[] { far, near }, false));
     Require(d.Members["r1"].DestinationId == "hold" && d.Members["r1"].TargetId == "near", "ranged kited or ignored the adjacent enemy");
     var idle = await new SquadPlanner().DecideAsync(Snap(130, new[] { new TargetCandidate("hidden", 160, 90, 0.9f, false) }, false));
-    Require(idle.Members["r1"].DestinationId == "r_b", "ranged idled at its support cell at an open breach");
+    Require(idle.Members["r1"].DestinationId == "r_p", "ranged idled at its support cell at an open breach");
     var walled = await new SquadPlanner().DecideAsync(Snap(130, new[] { new TargetCandidate("hidden", 160, 90, 0.9f, false) }, true));
     Require(walled.Members["r1"].DestinationId == "r_s", "ranged left its support cell at a walled breach");
 });
@@ -859,6 +861,30 @@ await Check("targets: a badly hurt enemy is finished before the focus target", a
     Require(TacticalHeuristics.PickTarget(new[] { strong, hurt }, "a") == "b", "a nearly dead enemy was ignored");
     Require(TacticalHeuristics.PickTarget(new[] { strong, hurt with { Health = 0.9f } }, "a") == "a", "healthy enemy changed the focus");
     await Task.CompletedTask;
+});
+
+await Check("cadence: a one-second squad interval schedules the next call 60-75 ticks out with a short commitment", () =>
+{
+    var settings = new AdaptiveHostilesSettings { MinDecisionCooldownTicks = 60, MaxDecisionCooldownTicks = 75, MinCommitmentTicks = 40 };
+    var record = new OperativeRecord("s", "squad");
+    for (ulong seed = 1; seed <= 20; seed++)
+    {
+        OperativeRegistry.ScheduleNext(record, 1000, seed, settings);
+        Require(record.NextDecisionTick is >= 1060 and <= 1075 && record.CommitUntilTick == 1040, "interval outside 60-75 ticks or commitment not 40");
+    }
+    Require(!OperativeRegistry.ShouldRequest(record, 1030, TacticalTrigger.Damaged, PawnBlock.None), "re-ordered inside the commitment");
+    Require(OperativeRegistry.ShouldRequest(record, 1041, TacticalTrigger.Damaged, PawnBlock.None), "key event did not re-order after the commitment");
+    return Task.CompletedTask;
+});
+
+await Check("press through: a melee raider past the opening keeps pressing instead of walking back to the breach cell", async () =>
+{
+    MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
+    var m = new SquadMember(new OperativeSnapshot("m1", 138, 90, 1f, "x", 1,
+        new[] { C("m1_b", "breach_B1", 130), C("m1_p", "press_B1", 146), C("m1_s", "stage_B1", 100) },
+        new[] { new TargetCandidate("hidden", 170, 90, 0.9f, false) }), false, true);
+    var squad = new SquadSnapshot("s", new[] { m }, 1, 0, 0, new[] { new BreachPoint("B1", 130, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
+    Require((await new SquadPlanner().DecideAsync(squad)).Members["m1"].DestinationId == "m1_p", "melee walked back from beyond the opening");
 });
 
 await Check("cover hop: a raider far from its role cell advances through a cover cell, a near one goes straight", async () =>
@@ -890,6 +916,7 @@ await Check("squad: raiders gather at staging cells and only go together on the 
     Require(d.Phase == SquadPhase.Gather, "attacked before gathering");
     Require(d.Members["m1"].DestinationId == "cell_stage_m1" && d.Members["r1"].DestinationId == "cell_stage_r1", "not sent to staging cells");
     Require(d.Members.Values.All(m => m.Stance == TacticalStance.Defensive), "attacked while gathering");
+    Require(d.Members["m1"].TargetId is null, "melee raider given a target to chase while gathering");
 
     var go = await new SquadPlanner().DecideAsync(StagedSquad(arrived: true));
     Require(go.Phase == SquadPhase.Breach && go.Members["m1"].DestinationId == "cell_push", "no go signal once staged");

@@ -12,6 +12,8 @@ public sealed class ModSettingsData : ModSettings
     public string OpenAiKey = "";
     public string OpenAiBaseUrl = "";
     public string Model = "";
+    /// <summary>Game ticks between squad decisions (60 = about one second).</summary>
+    public int SquadInterval = 60;
 
     public override void ExposeData()
     {
@@ -21,6 +23,7 @@ public sealed class ModSettingsData : ModSettings
         Scribe_Values.Look(ref OpenAiKey, "openAiKey", "");
         Scribe_Values.Look(ref OpenAiBaseUrl, "openAiBaseUrl", "");
         Scribe_Values.Look(ref Model, "model", "");
+        Scribe_Values.Look(ref SquadInterval, "squadInterval", 60);
     }
 
     public ProviderSettings ToProviderSettings() => new()

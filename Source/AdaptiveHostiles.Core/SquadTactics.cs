@@ -55,7 +55,7 @@ public sealed class DangerMemory
 /// </summary>
 public sealed class StallTracker
 {
-    public const int StallCycles = 3;
+    public const int StallCycles = 15; // about 1500 ticks at the default one-second cadence
     public const double MinDamage = 0.001;
     public const double MinDistanceGain = 1.5;
     private readonly HashSet<string> _excluded = new(StringComparer.Ordinal);

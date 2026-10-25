@@ -54,7 +54,10 @@ public static class OperativeJobExecutor
                      order.Stance != TacticalStance.Withdraw && !IsMelee(pawn) &&
                      (pinnedWall ?? (WallBreaker.TryFindBlocker(pawn, out var cover) ? cover : null)) is { } coverWall)
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, coverWall));
-            if (target != null && order.Stance != TacticalStance.Withdraw)
+            // A melee raider only goes for a target it can actually reach and is close to: chasing a colonist behind a wall
+            // or across the base pulled raiders off their cells and left them stuck against the wall.
+            if (target != null && order.Stance != TacticalStance.Withdraw &&
+                (!IsMelee(pawn) || (pawn.Position.DistanceTo(target.Position) <= 12f && pawn.CanReach(target, PathEndMode.Touch, Danger.Deadly))))
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, target));
             // Never leave the queue empty: when it runs out vanilla assault AI would walk the raider elsewhere.
             pawn.jobs.jobQueue.EnqueueLast(MakeHold());

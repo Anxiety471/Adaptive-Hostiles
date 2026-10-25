@@ -32,12 +32,12 @@ public static class SquadDriver
     /// <summary>After this long the vanilla exit logic is allowed again so a raid can never hang forever.</summary>
     private const int MaxSuppressTicks = 30000;
 
-    // Longer cooldown and commitment than a lone Operative so raiders reach their cells before the next order.
+    // About one decision a second by default (the mod setting); key events re-order after the short commitment.
     private static readonly AdaptiveHostilesSettings Settings = RaidAdapter.Settings with
     {
-        MinDecisionCooldownTicks = 360,
-        MaxDecisionCooldownTicks = 600,
-        MinCommitmentTicks = 360
+        MinDecisionCooldownTicks = AdaptiveHostilesMod.SquadIntervalTicks,
+        MaxDecisionCooldownTicks = AdaptiveHostilesMod.SquadIntervalTicks + AdaptiveHostilesMod.SquadIntervalTicks / 4,
+        MinCommitmentTicks = AdaptiveHostilesMod.SquadIntervalTicks * 2 / 3
     };
     private static readonly SquadLoop Loop = new(
         new SquadPlanner(JevPlanService.SharedClient),
@@ -71,6 +71,7 @@ public static class SquadDriver
         BreachMemory.Clear();
         Watches.Clear();
         Danger.Clear();
+        BreachFinder.ResetPins();
     }
 
     public static void Tick(OperativeRegistry registry, IReadOnlyList<TrackedRaid> raids)
@@ -145,6 +146,11 @@ public static class SquadDriver
                     if (health < state.LastHealth - 0.05f) trigger |= TacticalTrigger.Damaged;
                     state.LastHealth = health;
                 }
+                // Key events re-order the squad at once (after the short commitment): a raider fell or the pinned breach wall is gone.
+                if (Watches.TryGetValue(raid.Id, out var watch) && raid.Raiders.Any(p => p is { } r && (r.Dead || r.Downed) && !watch.Fallen.Contains(r.ThingID)))
+                    trigger |= TacticalTrigger.Damaged;
+                if (members.Count > 0 && BreachMemory.TryGetValue(raid.Id, out var kept) && WallFell(kept.Points, members[0].Map))
+                    trigger |= TacticalTrigger.Damaged;
                 return trigger;
             }
         }

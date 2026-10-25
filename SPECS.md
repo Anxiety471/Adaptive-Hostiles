@@ -75,7 +75,7 @@ Example Jev movement answer (`movement.choice`): `"cell_142_87"`. The mod maps t
 
 A raid that contains an Operative is commanded as one squad by Jev, not only the Operative.
 
-- One squad decision per cycle (same 120–300 tick cooldown and commitment as the Operative), never one call per pawn. The snapshot holds up to **12** controllable spawned raiders (the Operative first, then those nearest the enemy) with their own candidate cells and visible targets.
+- One squad decision per cycle (cadence below), never one call per pawn. The snapshot holds up to **24** controllable spawned raiders (the Operative first, then those nearest the enemy) with their own candidate cells and visible targets.
 - Questions: a squad `tactic` (`focus_fire`, `flank`, `suppress_push`, `regroup`), one squad `focus` target, and for each member a `move_i` Choice over that member's candidate IDs and a `stance_i` Choice. Answers are mapped back to the exact offered cells and revalidated per member before any job starts.
 - A member whose answer is invalid, or whose cell another member already took, uses the local heuristic for that member only. A wholly invalid squad answer uses the local squad fallback.
 - Members beyond the cap, blocked, downed or in a Jev-ordered exit are left to their current job / vanilla AI.
@@ -84,7 +84,7 @@ A raid that contains an Operative is commanded as one squad by Jev, not only the
 
 - Hostile turrets, powered or not, are part of the battlefield: once within the scan radius they are always offered as targets (kind `turret`, with range), whether or not the raider has line of sight, and they are listed before pawns so the target cap never drops them. Candidate cells inside their range are flagged and penalised, so Jev can focus a turret or stay out of its fire.
 - Until one raider has an enemy pawn or turret within the scan radius (60 cells), the raid stays on vanilla assault AI and keeps marching on the colony. From then on every raider that can be ordered is in the squad, including one that has lost sight of the enemy, so none is left to roam alone on vanilla AI.
-- Squad cadence is slower than the lone Operative: 360–600 tick cooldown and 360 tick commitment, so orders are not replaced mid-walk.
+- Squad cadence: a decision about every second. The mod setting `Squad decision interval` (default 60 ticks, 30–600; applied at game start) is the cooldown, with up to 25% jitter and a commitment of two thirds of it. One call per squad is in flight at a time; the next starts the interval after the last answer is applied. A raider falling or the pinned breach wall falling re-orders the squad after the commitment. The mod log reports the real round trip (request start to answer applied) as median and 95th percentile every 20 calls. Hop and press cells stay pinned to a raider until it arrives (or 600 ticks pass) so the faster cadence does not make them drift; an order identical to the one being carried out does not restart the pawn's job. Stall detection counts 15 cycles; the gather wait is timed (the go is forced 3000 ticks after the first gather order). While gathering, melee raiders have no target to chase and melee only attack a target they can reach within 12 cells.
 - Every member must get a distinct destination.
 
 ### Breach and roles

@@ -49,6 +49,10 @@ public static class SettingsWindow
         data.Model = list.TextEntry(data.Model ?? "");
 
         list.GapLine();
+        list.Label($"Squad decision interval: {data.SquadInterval} ticks (60 = about 1 second; lower is smarter but costs more model calls)");
+        data.SquadInterval = (int)list.Slider(data.SquadInterval, 30, 600);
+
+        list.GapLine();
         list.Label("Keys are stored unencrypted in your RimWorld Config folder; do not share that file. " +
                    "Changes apply the next time the game starts. Environment variables are still used for any blank field.");
         list.End();

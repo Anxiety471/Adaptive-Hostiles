@@ -59,9 +59,11 @@ public sealed class SquadPlanner(IJevClient? client = null)
     public const double ReadyFraction = 1.0;
     public const float StagedWithin = 4f;
     /// <summary>After this many gather cycles the squad goes anyway, so a blocked member cannot stall the raid.</summary>
-    public const int MaxGatherCycles = 4;
+    public const int MaxGatherCycles = 50; // seconds of game time since the first gather order (3000 ticks)
     /// <summary>A melee raider this close to its breach cell (or its press cell) is sent on through the opening.</summary>
     public const float PressWithin = 3f;
+    /// <summary>A raider already this close to its press cell is through the opening and keeps pressing, never walking back to the breach cell.</summary>
+    public const float PressStick = 9f;
     /// <summary>No more raiders than this are ordered onto one target; the rest take their next best.</summary>
     public const int MaxPerTarget = 3;
     /// <summary>A ranged raider with a visible enemy this close shoots from where it stands instead of repositioning.</summary>
@@ -249,7 +251,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
             var press = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "press_" + id);
             var breach = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "breach_" + id);
             if (press is null) continue;
-            if (Near(m, press) || (breach is not null && Near(m, breach)))
+            if (Dist(m, press.X, press.Z) <= PressStick || (breach is not null && Near(m, breach)))
                 members[m.Snapshot.PawnId] = d with { DestinationId = press.Id, Stance = TacticalStance.Aggressive };
         }
         return decision with { Members = members };
@@ -277,8 +279,9 @@ public sealed class SquadPlanner(IJevClient? client = null)
             if (decision.Phase == SquadPhase.Gather || decision.BreachId is null || squad.Breaches.FirstOrDefault(b => b.Id == id) is not { WallX: < 0 }) continue;
             var support = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "support_" + id);
             var breach = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "breach_" + id);
-            if (support is not null && breach is not null && !m.Snapshot.Targets.Any(t => t.Visible) && Near(m, support))
-                members[m.Snapshot.PawnId] = d with { DestinationId = breach.Id, Stance = TacticalStance.Aggressive };
+            var press = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "press_" + id);
+            if (press is not null && !m.Snapshot.Targets.Any(t => t.Visible) && (Dist(m, press.X, press.Z) <= PressStick || (support is not null && Near(m, support)) || (breach is not null && Near(m, breach))))
+                members[m.Snapshot.PawnId] = d with { DestinationId = press.Id, Stance = TacticalStance.Aggressive };
         }
         return decision with { Members = members };
     }
@@ -348,7 +351,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
             var stage = StageCell(m, Effective(m, breachId));
             held[m.Snapshot.PawnId] = d.Stance is TacticalStance.Withdraw or TacticalStance.Flee || stage is null
                 ? d
-                : d with { DestinationId = stage.Id, Stance = TacticalStance.Defensive };
+                : d with { DestinationId = stage.Id, Stance = TacticalStance.Defensive, TargetId = m.IsMelee ? null : d.TargetId };
         }
         return decision with { Phase = SquadPhase.Gather, Members = held };
     }
@@ -362,7 +365,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
         if (purpose.StartsWith("stage_", StringComparison.Ordinal))
             return breachId is not null && purpose.EndsWith("_" + breachId, StringComparison.Ordinal);
         if (purpose.StartsWith("press_", StringComparison.Ordinal))
-            return isMelee && breachId is not null && purpose.EndsWith("_" + breachId, StringComparison.Ordinal);
+            return breachId is not null && purpose.EndsWith("_" + breachId, StringComparison.Ordinal);
         if (purpose.StartsWith("breach_", StringComparison.Ordinal) || purpose.StartsWith("support_", StringComparison.Ordinal))
         {
             if (breachId is null || !purpose.EndsWith("_" + breachId, StringComparison.Ordinal)) return false;

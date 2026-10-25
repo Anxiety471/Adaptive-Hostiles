@@ -165,15 +165,16 @@ public static class SquadDriver
 
         public SquadSnapshot Sample()
         {
-            // Until someone sees the colony the raid stays on vanilla assault AI and keeps marching. From then on every
-            // raider that can be ordered is in the squad, including ones that lost sight of the enemy, so none roams alone.
+            // The squad commands the whole raid from the first cycle: a raid knows where the colony is, so every raider that can
+            // be ordered is in the squad (including late and far ones) and heads for staging, none marches on vanilla AI.
+            var colony = members.First().Map.mapPawns.FreeColonistsSpawned.Where(c => !c.Downed).ToList();
             var ordered = members.Where(p => BlockOf(p.ThingID) == PawnBlock.None)
                 .Select(p => (Pawn: p, IsOp: registry.TryGet(p.ThingID, out _),
-                    Dist: OperativeSampler.ColonyPawns(p).FirstOrDefault()?.Position.DistanceTo(p.Position) ?? float.MaxValue,
+                    Dist: colony.Count == 0 ? float.MaxValue : colony.Min(c => c.Position.DistanceTo(p.Position)),
                     Turrets: OperativeSampler.HostileTurrets(p).Count > 0))
                 .ToList();
             raid.Status(out var sent, out var down, out var retreated);
-            if (!ordered.Any(x => x.Dist < float.MaxValue || x.Turrets))
+            if (colony.Count == 0 && !ordered.Any(x => x.Turrets))
                 return new SquadSnapshot(raid.Id, new List<SquadMember>(), sent, down, retreated);
             var unordered = members.Where(p => BlockOf(p.ThingID) != PawnBlock.None).Select(p => $"{p.LabelShort} ({BlockOf(p.ThingID)})")
                 .Concat(ordered.OrderByDescending(x => x.IsOp).ThenBy(x => x.Pawn.thingIDNumber).Skip(SquadPlanner.MaxMembers).Select(x => $"{x.Pawn.LabelShort} (over cap)")).ToList();
@@ -184,8 +185,8 @@ public static class SquadDriver
 
             // Where the colony is weakest, found once for the whole squad from the lead raider's map view.
             var lead = ready.OrderBy(x => x.Dist).First().Pawn;
-            var defenders = ready.SelectMany(x => OperativeSampler.ColonyPawns(x.Pawn)).Distinct().Take(16).ToList();
-            var hostiles = ready.SelectMany(x => OperativeSampler.HostilePawns(x.Pawn)).Distinct().Take(16).ToList();
+            var defenders = colony.OrderBy(c => c.Position.DistanceTo(lead.Position)).Take(16).ToList();
+            var hostiles = ready.SelectMany(x => OperativeSampler.HostilePawns(x.Pawn)).Concat(defenders).Distinct().Take(24).ToList();
             var turrets = OperativeSampler.HostileTurrets(lead);
             var centre = BreachFinder.DefenderCentre(defenders, turrets);
             var leadMap = OperativeSampler.MapFor(lead, hostiles);

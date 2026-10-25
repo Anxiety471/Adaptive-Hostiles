@@ -44,7 +44,8 @@ public sealed record TargetCandidate(
     float Threat,
     bool Visible,
     string Kind = "pawn",
-    float Range = 0);
+    float Range = 0,
+    float Health = 1f);
 
 public sealed record OperativeSnapshot(
     string PawnId,

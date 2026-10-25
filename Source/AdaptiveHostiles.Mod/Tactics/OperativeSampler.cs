@@ -93,7 +93,7 @@ public static class OperativeSampler
             }
             var armed = p.equipment?.Primary != null ? 0.5f : 0.2f;
             targets.Add(new TargetCandidate(TargetIdFor(p), p.Position.x, p.Position.z,
-                armed + closeness * 0.5f, true));
+                armed + closeness * 0.5f, true, "pawn", 0f, p.health.summaryHealth.SummaryHealthPercent));
         }
 
         var allies = self.Map.mapPawns.AllPawnsSpawned.Count(p =>

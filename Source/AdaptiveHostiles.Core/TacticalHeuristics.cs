@@ -19,6 +19,8 @@ public static class TacticalHeuristics
     private static readonly string[] SafeOrder = { "retreat", "cover" };
     /// <summary>A badly hurt raider that withdrew keeps withdrawing until it is back above this health.</summary>
     public const float WithdrawUntil = GuardHealth;
+    /// <summary>An enemy below this health is finished off before the focus target.</summary>
+    public const float FinishBelow = 0.35f;
 
     public static OperativeDecision Decide(
         IReadOnlyList<MovementCandidate> moves, IReadOnlyList<TargetCandidate> targets,
@@ -113,6 +115,9 @@ public static class TacticalHeuristics
                 return turrets.OrderByDescending(t => t.Threat).ThenBy(t => t.Id, StringComparer.Ordinal).First().Id;
             }
         }
+        // A badly hurt enemy is finished before the focus moves on.
+        var weak = visible.Where(t => t.Kind != "turret" && t.Health < FinishBelow).OrderBy(t => t.Health).ThenBy(t => t.Id, StringComparer.Ordinal).FirstOrDefault();
+        if (weak is not null) return weak.Id;
         if (focusTargetId is not null && visible.Any(t => t.Id == focusTargetId)) return focusTargetId;
         return visible.OrderByDescending(t => t.Threat).ThenBy(t => t.Id, StringComparer.Ordinal)
             .FirstOrDefault()?.Id;

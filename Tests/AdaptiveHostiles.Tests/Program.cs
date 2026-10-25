@@ -852,6 +852,15 @@ await Check("ranged: shoot point blank instead of kiting, and move up at an open
     Require(walled.Members["r1"].DestinationId == "r_s", "ranged left its support cell at a walled breach");
 });
 
+await Check("targets: a badly hurt enemy is finished before the focus target", async () =>
+{
+    var strong = new TargetCandidate("a", 10, 10, 0.9f, true);
+    var hurt = new TargetCandidate("b", 12, 10, 0.4f, true, "pawn", 0f, 0.2f);
+    Require(TacticalHeuristics.PickTarget(new[] { strong, hurt }, "a") == "b", "a nearly dead enemy was ignored");
+    Require(TacticalHeuristics.PickTarget(new[] { strong, hurt with { Health = 0.9f } }, "a") == "a", "healthy enemy changed the focus");
+    await Task.CompletedTask;
+});
+
 await Check("cover hop: a raider far from its role cell advances through a cover cell, a near one goes straight", async () =>
 {
     MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);

@@ -75,28 +75,30 @@ public static class BreachFinder
             var fromZ = bp.WallX >= 0 ? bp.WallZ : centre.z;
             var anchorX = bp.X;
             var anchorZ = bp.Z;
+            // Role cells stay on the raiders' side of the breach wall; a cell inside the base would send them around it.
+            var wallSide = bp.WallX >= 0 ? (Func<int, int, bool>)((x, z) => BreachRoute.OutsideWall(bp.WallX, bp.WallZ, bp.X, bp.Z, x, z)) : null;
             if (!isMelee)
             {
                 // Behind the melee push: continue the line outward.
                 var dx = bp.X - fromX;
                 var dz = bp.Z - fromZ;
                 var len = Math.Max(1f, (float)Math.Sqrt(dx * dx + dz * dz));
-                var back = Math.Clamp(range * 0.5f, 4f, 12f);
+                var back = BreachRoute.SupportDistance(range);
                 anchorX = bp.X + (int)Math.Round(dx / len * back);
                 anchorZ = bp.Z + (int)Math.Round(dz / len * back);
             }
 
-            Add(result, pawn, map, FindCell(map, anchorX, anchorZ, slot, used), (isMelee ? "breach_" : "support_") + bp.Id, used);
+            Add(result, pawn, map, FindCell(map, anchorX, anchorZ, slot, used, wallSide), (isMelee ? "breach_" : "support_") + bp.Id, used);
             // A stalled assault sends ranged raiders to open a wall too, so they are offered the breach cell as well.
             if (!isMelee)
-                Add(result, pawn, map, FindCell(map, bp.X, bp.Z, slot, used), "breach_" + bp.Id, used);
+                Add(result, pawn, map, FindCell(map, bp.X, bp.Z, slot, used, wallSide), "breach_" + bp.Id, used);
 
             // Staging cell: further out on the raiders' side, where the squad gathers until the go signal.
             var sx = bp.X - fromX;
             var sz = bp.Z - fromZ;
             var slen = Math.Max(1f, (float)Math.Sqrt(sx * sx + sz * sz));
             Add(result, pawn, map,
-                FindCell(map, bp.X + (int)Math.Round(sx / slen * StageDistance), bp.Z + (int)Math.Round(sz / slen * StageDistance), slot, used),
+                FindCell(map, bp.X + (int)Math.Round(sx / slen * StageDistance), bp.Z + (int)Math.Round(sz / slen * StageDistance), slot, used, wallSide),
                 "stage_" + bp.Id, used);
         }
         return result;
@@ -115,7 +117,8 @@ public static class BreachFinder
     }
 
     // Nearest free standable, reachable cell around the anchor; slot rotates the search so members spread.
-    private static (int, int)? FindCell(RimWorldTacticalMap map, int ax, int az, int slot, HashSet<(int, int)> used)
+    private static (int, int)? FindCell(
+        RimWorldTacticalMap map, int ax, int az, int slot, HashSet<(int, int)> used, Func<int, int, bool>? allowed = null)
     {
         for (var r = 0; r <= 4; r++)
         {
@@ -126,7 +129,7 @@ public static class BreachFinder
             for (var i = 0; i < ring.Count; i++)
             {
                 var c = ring[(i + slot) % ring.Count];
-                if (used.Contains(c) || !map.IsStandable(c.Item1, c.Item2) || !map.IsReachable(c.Item1, c.Item2)) continue;
+                if (used.Contains(c) || (allowed is not null && !allowed(c.Item1, c.Item2)) || !map.IsStandable(c.Item1, c.Item2) || !map.IsReachable(c.Item1, c.Item2)) continue;
                 return c;
             }
         }

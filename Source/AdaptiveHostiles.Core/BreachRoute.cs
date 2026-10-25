@@ -14,6 +14,12 @@ public static class BreachRoute
 {
     /// <summary>Open bases have no wall; the squad approaches to this many cells short of the path's end.</summary>
     public const int OpenSetback = 6;
+    /// <summary>Ranged support stands this close behind the breach cell: within a few cells of the melee and in weapon range of the wall.</summary>
+    public static float SupportDistance(float range) => Math.Clamp(range * 0.3f, 3f, 6f);
+
+    /// <summary>True when (x,z) is on the raiders' side of the breach wall: further out than the wall along the stand direction.</summary>
+    public static bool OutsideWall(int wallX, int wallZ, int standX, int standZ, int x, int z) =>
+        (x - wallX) * (standX - wallX) + (z - wallZ) * (standZ - wallZ) > 0;
 
     /// <summary>
     /// <paramref name="path"/> runs from the raider outward to the defender. A blocker's neighbour on the raider's side

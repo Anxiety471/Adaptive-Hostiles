@@ -14,7 +14,7 @@ public static class WallBreaker
     {
         blocker = null!;
         if (!pawn.Spawned) return false;
-        var defender = OperativeSampler.HostilePawns(pawn).FirstOrDefault();
+        var defender = OperativeSampler.ColonyPawns(pawn).FirstOrDefault();
         if (defender is null) return false;
 
         var path = PathCells(pawn, defender);

@@ -48,8 +48,9 @@ public static class OperativeJobExecutor
             if (order.Reason.StartsWith("breach_", StringComparison.Ordinal) && order.Stance != TacticalStance.Withdraw &&
                 (pinnedWall ?? (WallBreaker.TryFindBlocker(pawn, out var wall) ? wall : null)) is { } breachWall)
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, breachWall));
-            // Ranged raiders backing a breach shoot the wall too instead of idling behind it.
-            else if (order.Reason.StartsWith("support_", StringComparison.Ordinal) && target == null &&
+            // Ranged raiders backing a breach shoot the wall too instead of idling behind it, unless they can see their target.
+            else if (order.Reason.StartsWith("support_", StringComparison.Ordinal) &&
+                     !(target != null && GenSight.LineOfSight(dest, target.Position, pawn.Map)) &&
                      order.Stance != TacticalStance.Withdraw && !IsMelee(pawn) &&
                      (pinnedWall ?? (WallBreaker.TryFindBlocker(pawn, out var cover) ? cover : null)) is { } coverWall)
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, coverWall));

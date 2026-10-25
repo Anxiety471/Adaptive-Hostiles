@@ -666,6 +666,104 @@ await Check("C5 intent log: one mod-log callout per phase change, never repeated
     return Task.CompletedTask;
 });
 
+await Check("breach cells: role cells stay on the raiders' side of the wall and ranged support stands close enough to shoot it", () =>
+{
+    // wall at (130,136), stand cell (130,137): outside is z > 136
+    Require(BreachRoute.OutsideWall(130, 136, 130, 137, 128, 140), "outside cell rejected");
+    Require(BreachRoute.OutsideWall(130, 136, 130, 137, 133, 137), "stand row rejected");
+    Require(!BreachRoute.OutsideWall(130, 136, 130, 137, 130, 135), "cell inside the base accepted");
+    Require(!BreachRoute.OutsideWall(130, 136, 130, 137, 126, 136), "cell level with the wall accepted");
+    Require(!BreachRoute.OutsideWall(130, 136, 130, 137, 118, 127), "far interior cell accepted");
+    Require(BreachRoute.SupportDistance(30f) <= 6f && BreachRoute.SupportDistance(30f) >= 3f, "support distance not within a few cells");
+    Require(BreachRoute.SupportDistance(12f) < 12f, "support distance not within weapon range of the wall");
+    return Task.CompletedTask;
+});
+
+await Check("turrets: ranged raiders focus a turret over colonists, melee keep their usual target, and the cap of 3 holds", async () =>
+{
+    var targets = new[]
+    {
+        new TargetCandidate("pawn_c", 145, 86, 0.9f, true),
+        new TargetCandidate("pawn_t", 146, 86, 0.7f, true, "turret", 20f)
+    };
+    Require(TacticalHeuristics.PickTarget(targets, null) == "pawn_c", "default target changed");
+    Require(TacticalHeuristics.PickTarget(targets, null, preferTurrets: true) == "pawn_t", "ranged did not prefer the turret");
+    Require(TacticalHeuristics.PickTarget(targets.Take(1).ToList(), null, preferTurrets: true) == "pawn_c", "no turret should fall back to colonists");
+
+    MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
+    SquadMember M(string id, bool melee) => new(new OperativeSnapshot(id, 100, 90, 1f, "x", 1,
+        new[] { C($"{id}_s", "stage_B1", 100), C($"{id}_p", melee ? "breach_B1" : "support_B1", 150) }, targets), false, melee);
+    var members = new[] { M("m1", true), M("r1", false), M("r2", false), M("r3", false), M("r4", false) };
+    var snap = new SquadSnapshot("s", members, 5, 0, 0, new[] { new BreachPoint("B1", 150, 90, 0.5f, 1, 2) }, SquadPhase.Breach);
+    var d = await new SquadPlanner().DecideAsync(snap);
+    Require(d.FocusTargetId == "pawn_t", "squad did not focus the turret that covers the breach");
+    Require(d.Members["m1"].TargetId == "pawn_t", "capped target missing for the first raider");
+    var onTurret = new[] { "m1", "r1", "r2", "r3", "r4" }.Count(id => d.Members[id].TargetId == "pawn_t");
+    Require(onTurret == SquadPlanner.MaxPerTarget, $"{onTurret} raiders on one turret");
+    var noTurretCover = snap with { BreachPoints = new[] { new BreachPoint("B1", 150, 90, 0.5f, 1, 0) } };
+    var d2 = await new SquadPlanner().DecideAsync(noTurretCover);
+    Require(d2.FocusTargetId == "pawn_c", "focused a turret that does not cover the breach");
+    Require(d2.Members["r1"].TargetId == "pawn_t", "ranged still prefer turrets");
+});
+
+await Check("enemies: a non-colony hostile is offered as an enemy target and engaged ahead of colonists, turrets still first for ranged", async () =>
+{
+    var targets = new[]
+    {
+        new TargetCandidate("pawn_c", 145, 86, 0.9f, true),
+        new TargetCandidate("pawn_mech", 140, 86, 1.1f, true, "enemy"),
+        new TargetCandidate("pawn_t", 146, 86, 0.7f, true, "turret", 20f)
+    };
+    Require(TacticalHeuristics.PickTarget(targets.Take(2).ToList(), null) == "pawn_mech", "enemy not engaged first");
+    Require(TacticalHeuristics.PickTarget(targets, null, preferTurrets: true) == "pawn_t", "turret not preferred by ranged");
+    var client = new FakeClient("""{"tactic":"focus_fire","focus":"pawn_mech","phase":"breach","breach":"B1","stance_0":"aggressive","move_0":"hold"}""");
+    var d = await new SquadPlanner(client).DecideAsync(new SquadSnapshot("s", new[]
+    {
+        new SquadMember(new OperativeSnapshot("m1", 100, 90, 1f, "x", 1, new List<MovementCandidate>(), targets), false, true)
+    }, 1, 0, 0));
+    var text = System.Text.Json.JsonSerializer.Serialize(client.LastQuestions);
+    Require(text.Contains("non-colony enemy"), "enemy not described to the model");
+    Require(d.FocusTargetId == "pawn_mech", "model focus on an enemy rejected");
+});
+
+await Check("withdraw: a hurt raider only goes to safe cells, never the breach or support cell, and holds when there is none", () =>
+{
+    MovementCandidate C(string id, string purpose) => new(id, 1, 1, 0.5f, 0.2f, 10, purpose, true);
+    var attackOnly = new[] { C("push", "breach_B1"), C("sup", "support_B1"), C("adv", "advance") };
+    Require(TacticalHeuristics.PickDestination(attackOnly, TacticalStance.Withdraw, 0, "B1", true) is null, "withdraw picked an attack cell");
+    var withStage = attackOnly.Append(C("stage", "stage_B1")).ToArray();
+    Require(TacticalHeuristics.PickDestination(withStage, TacticalStance.Withdraw, 0, "B1", true)?.Id == "stage", "withdraw did not fall back to the staging cell");
+    var withRetreat = withStage.Append(C("away", "retreat")).ToArray();
+    Require(TacticalHeuristics.PickDestination(withRetreat, TacticalStance.Withdraw, 0, "B1", true)?.Id == "away", "retreat cell not preferred");
+    var d = TacticalHeuristics.Decide(attackOnly, new List<TargetCandidate>(), 0.25f, 0, breachId: "B1", isMelee: true);
+    Require(d.Stance == TacticalStance.Withdraw && d.DestinationId == "hold", "hurt melee with no safe cell should hold");
+    return Task.CompletedTask;
+});
+
+await Check("withdraw latch: a raider that withdrew keeps withdrawing until it is back above half health", () =>
+{
+    MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
+    SquadSnapshot Snap(float hp) => new("s", new[]
+    {
+        new SquadMember(new OperativeSnapshot("m1", 130, 90, hp, "x", 2,
+            new[] { C("push", "breach_B1", 150), C("away", "retreat", 110), C("stage", "stage_B1", 100) },
+            new[] { new TargetCandidate("pawn_1", 145, 86, 0.8f, true) }), false, true)
+    }, 1, 0, 0, new[] { new BreachPoint("B1", 150, 90, 0.9f, 0, 0) });
+    var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());
+    var host = new FakeSquadHost { Snapshot = Snap(0.2f) };
+    loop.Tick("s", host, 1000, 1);
+    host.Snapshot = Snap(0.42f); // above the 0.35 wounded line, below the 0.5 recovery line
+    loop.Tick("s", host, 2000, 1);
+    loop.Tick("s", host, 3000, 1);
+    Require(host.Applied.Count >= 2, "no orders");
+    Require(host.Applied.All(a => a.Order.Stance == TacticalStance.Withdraw && !a.Order.Reason.StartsWith("breach_")), "wounded raider went back to the breach");
+    host.Snapshot = Snap(0.6f);
+    loop.Tick("s", host, 4000, 1);
+    loop.Tick("s", host, 5000, 1);
+    Require(host.Applied.Last().Order.Stance != TacticalStance.Withdraw, "raider did not return after recovering");
+    return Task.CompletedTask;
+});
+
 await Check("squad: melee push the weakest breach, ranged support behind it, in sync", async () =>
 {
     var squad = BreachSquad();
@@ -729,18 +827,12 @@ await Check("squad loop: remembers the phase between cycles", async () =>
     await Task.CompletedTask;
 });
 
-await Check("squad: ranged hold until the melee reach the breach; flee needs a lost raid and a nearly dead raider", async () =>
+await Check("squad: ranged support from the start of the breach phase; flee needs a lost raid and a nearly dead raider", async () =>
 {
     var squad = StagedSquad(arrived: true) with { PreviousPhase = SquadPhase.Breach };
-    var hold = await new SquadPlanner().DecideAsync(squad);
-    Require(hold.Members["m1"].DestinationId == "cell_push", "melee not pushing");
-    Require(hold.Members["r1"].DestinationId == "cell_stage_r1", "ranged advanced before melee reached the breach");
-    // melee now standing on its breach cell
-    var landed = squad with { Members = squad.Members.Select(m => m.IsMelee
-        ? m with { Snapshot = m.Snapshot with { X = 150, Z = 90 } } : m).ToList() };
-    var go = await new SquadPlanner().DecideAsync(landed);
-    Require(go.Members["r1"].DestinationId == "cell_support", "ranged held after melee arrived");
-    Require((await new SquadPlanner().DecideAsync(squad with { BreachCycles = SquadPlanner.MaxMeleeLeadCycles })).Members["r1"].DestinationId == "cell_support", "ranged held forever");
+    var go = await new SquadPlanner().DecideAsync(squad);
+    Require(go.Members["m1"].DestinationId == "cell_push", "melee not pushing");
+    Require(go.Members["r1"].DestinationId == "cell_support", "ranged held back instead of supporting at once");
     Require(TacticalHeuristics.Guard(TacticalStance.Flee, 0.3f, 0.9) == TacticalStance.Withdraw, "hurt raider fled");
     Require(TacticalHeuristics.Guard(TacticalStance.Flee, 0.1f, 0.2) == TacticalStance.Withdraw, "fled in a winning raid");
     Require(TacticalHeuristics.Guard(TacticalStance.Flee, 0.1f, 0.6) == TacticalStance.Flee, "dying raider in a lost raid cannot flee");

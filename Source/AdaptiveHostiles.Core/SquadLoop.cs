@@ -30,6 +30,7 @@ public sealed class SquadLoop
     private readonly Dictionary<string, (SquadSnapshot Offered, long Tick)> _pending = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (SquadPhase Phase, int GatherCycles, int BreachCycles)> _phase = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StallTracker> _stall = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HashSet<string>> _withdrawn = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _chosen = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (IReadOnlyList<string> PawnIds, string BreachKey)> _split = new(StringComparer.Ordinal);
 
@@ -52,6 +53,7 @@ public sealed class SquadLoop
         _phase.Remove(squadId);
         _stall.Remove(squadId);
         _chosen.Remove(squadId);
+        _withdrawn.Remove(squadId);
         _split.Remove(squadId);
     }
 
@@ -61,6 +63,7 @@ public sealed class SquadLoop
         _phase.Clear();
         _stall.Clear();
         _chosen.Clear();
+        _withdrawn.Clear();
         _split.Clear();
         _scheduler?.Reset();
     }
@@ -107,6 +110,7 @@ public sealed class SquadLoop
         {
             var id = member.Snapshot.PawnId;
             if (!decision.Members.TryGetValue(id, out var memberDecision)) continue; // beyond the cap: vanilla AI
+            memberDecision = KeepWithdrawn(squadId, member, memberDecision);
             var order = OperativeOrderResolver.Resolve(
                 memberDecision, member.Snapshot, host.CurrentMap(id), host.BlockOf(id),
                 member.IsOperative ? host.RecordOf(id) : null, tick, canFlee: !member.IsOperative);
@@ -120,6 +124,26 @@ public sealed class SquadLoop
         var breach = decision.Phase == SquadPhase.Gather ? 0 : prior.BreachCycles + 1;
         _phase[squadId] = (decision.Phase, gather, breach);
         OperativeRegistry.ScheduleNext(host.Timing, tick, seed, _settings);
+    }
+
+    // A raider that withdrew stays withdrawn until it has recovered, so a hurt melee raider does not walk back and forth.
+    private OperativeDecision KeepWithdrawn(string squadId, SquadMember member, OperativeDecision decision)
+    {
+        if (!_withdrawn.TryGetValue(squadId, out var set)) _withdrawn[squadId] = set = new HashSet<string>(StringComparer.Ordinal);
+        var id = member.Snapshot.PawnId;
+        if (decision.Stance is TacticalStance.Withdraw or TacticalStance.Flee)
+        {
+            set.Add(id);
+            return decision;
+        }
+        if (!set.Contains(id)) return decision;
+        if (member.Snapshot.HealthFraction >= TacticalHeuristics.WithdrawUntil)
+        {
+            set.Remove(id);
+            return decision;
+        }
+        var safe = TacticalHeuristics.PickDestination(member.Snapshot.Destinations, TacticalStance.Withdraw, 0);
+        return decision with { DestinationId = safe?.Id ?? "hold", Stance = TacticalStance.Withdraw };
     }
 
     // Stall replanning, the second breach group and ranged opening a wall, applied to the sampled snapshot.

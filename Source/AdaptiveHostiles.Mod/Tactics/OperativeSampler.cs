@@ -10,6 +10,8 @@ public static class OperativeSampler
     public const float ThreatScanRadius = 60f;
     public const float AllyRadius = 15f;
     public const int MaxThreats = 8;
+    /// <summary>Base threat of a non-colony hostile; at least any colonist, so it is engaged first.</summary>
+    public const float EnemyThreat = 1.0f;
     private const string TargetPrefix = "pawn_";
 
     public static string TargetIdFor(Thing t) => TargetPrefix + t.ThingID;
@@ -22,12 +24,18 @@ public static class OperativeSampler
         {
             if (p == self || p.Dead || p.Downed || p.Faction is null || p.IsPrisoner || p.IsSlave) continue;
             if (!self.Faction.HostileTo(p.Faction)) continue;
+            if (p.GetComp<CompCanBeDormant>() is { Awake: false }) continue; // a sleeping mech cluster is not a threat yet
             if (!p.Position.InHorDistOf(self.Position, ThreatScanRadius)) continue;
             result.Add(p);
         }
         result.Sort((a, b) => a.Position.DistanceToSquared(self.Position).CompareTo(b.Position.DistanceToSquared(self.Position)));
         return result;
     }
+
+    /// <summary>The colony's own pawns among the hostiles: these are what a raid breaches towards. Mechs and other factions are not.</summary>
+    public static List<Pawn> ColonyPawns(Pawn self) => HostilePawns(self).Where(IsColony).ToList();
+
+    public static bool IsColony(Pawn p) => p.Faction == Faction.OfPlayer;
 
     /// <summary>Armed hostile turrets within scan range; a turret is a threat that is not a pawn.</summary>
     public static List<Building_Turret> HostileTurrets(Pawn self)
@@ -38,7 +46,6 @@ public static class OperativeSampler
         {
             if (t is not Building_Turret turret || !turret.Spawned || turret.Faction is null) continue;
             if (!self.Faction.HostileTo(turret.Faction)) continue;
-            if (turret.GetComp<CompPowerTrader>() is { PowerOn: false }) continue;
             if (!turret.Position.InHorDistOf(self.Position, ThreatScanRadius)) continue;
             result.Add(turret);
         }
@@ -62,24 +69,31 @@ public static class OperativeSampler
             map, self.Position.x, self.Position.z, threatCells, weaponRange: range);
 
         var targets = new List<TargetCandidate>();
+        // Turrets are always known once in scan range, in line of sight or not, and listed first so the cap never drops them.
+        foreach (var t in HostileTurrets(self))
+        {
+            if (targets.Count >= OperativePlanner.MaxTargets - 1) break;
+            var closeness = 1f - Math.Min(1f, t.Position.DistanceTo(self.Position) / ThreatScanRadius);
+            targets.Add(new TargetCandidate(TargetPrefix + t.ThingID, t.Position.x, t.Position.z,
+                0.7f + closeness * 0.3f, true, "turret", TurretRange(t)));
+        }
+
         foreach (var p in hostiles)
         {
             if (targets.Count >= OperativePlanner.MaxTargets - 1) break;
             var visible = GenSight.LineOfSight(self.Position, p.Position, self.Map);
             if (!visible) continue;
             var closeness = 1f - Math.Min(1f, p.Position.DistanceTo(self.Position) / ThreatScanRadius);
+            if (!IsColony(p))
+            {
+                // Mechs, manhunters and other factions' pawns shoot at the raid too: engage them before they close in.
+                targets.Add(new TargetCandidate(TargetIdFor(p), p.Position.x, p.Position.z,
+                    EnemyThreat + closeness * 0.2f, true, "enemy"));
+                continue;
+            }
             var armed = p.equipment?.Primary != null ? 0.5f : 0.2f;
             targets.Add(new TargetCandidate(TargetIdFor(p), p.Position.x, p.Position.z,
                 armed + closeness * 0.5f, true));
-        }
-
-        foreach (var t in HostileTurrets(self))
-        {
-            if (targets.Count >= OperativePlanner.MaxTargets - 1) break;
-            if (!GenSight.LineOfSight(self.Position, t.Position, self.Map)) continue;
-            var closeness = 1f - Math.Min(1f, t.Position.DistanceTo(self.Position) / ThreatScanRadius);
-            targets.Add(new TargetCandidate(TargetPrefix + t.ThingID, t.Position.x, t.Position.z,
-                0.7f + closeness * 0.3f, true, "turret", TurretRange(t)));
         }
 
         var allies = self.Map.mapPawns.AllPawnsSpawned.Count(p =>

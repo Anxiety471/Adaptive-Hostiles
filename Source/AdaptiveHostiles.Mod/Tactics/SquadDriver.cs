@@ -165,23 +165,26 @@ public static class SquadDriver
 
         public SquadSnapshot Sample()
         {
-            // Raiders with no enemy in range stay on vanilla assault AI so they keep marching on the colony.
-            var ready = members.Where(p => BlockOf(p.ThingID) == PawnBlock.None)
-                .Where(p => OperativeSampler.HostilePawns(p).Count > 0 || OperativeSampler.HostileTurrets(p).Count > 0)
+            // Until someone sees the colony the raid stays on vanilla assault AI and keeps marching. From then on every
+            // raider that can be ordered is in the squad, including ones that lost sight of the enemy, so none roams alone.
+            var ordered = members.Where(p => BlockOf(p.ThingID) == PawnBlock.None)
                 .Select(p => (Pawn: p, IsOp: registry.TryGet(p.ThingID, out _),
-                    Dist: OperativeSampler.HostilePawns(p).FirstOrDefault()?.Position.DistanceTo(p.Position) ?? float.MaxValue))
-                .OrderByDescending(x => x.IsOp).ThenBy(x => x.Dist)
-                .Take(SquadPlanner.MaxMembers)
+                    Dist: OperativeSampler.ColonyPawns(p).FirstOrDefault()?.Position.DistanceTo(p.Position) ?? float.MaxValue,
+                    Turrets: OperativeSampler.HostileTurrets(p).Count > 0))
                 .ToList();
             raid.Status(out var sent, out var down, out var retreated);
-            if (ready.Count == 0) return new SquadSnapshot(raid.Id, new List<SquadMember>(), sent, down, retreated);
+            if (!ordered.Any(x => x.Dist < float.MaxValue || x.Turrets))
+                return new SquadSnapshot(raid.Id, new List<SquadMember>(), sent, down, retreated);
+            var ready = ordered.OrderByDescending(x => x.IsOp).ThenBy(x => x.Dist).Take(SquadPlanner.MaxMembers)
+                .Select(x => (x.Pawn, x.IsOp, x.Dist)).ToList();
 
             // Where the colony is weakest, found once for the whole squad from the lead raider's map view.
-            var lead = ready[0].Pawn;
-            var defenders = ready.SelectMany(x => OperativeSampler.HostilePawns(x.Pawn)).Distinct().Take(16).ToList();
+            var lead = ready.OrderBy(x => x.Dist).First().Pawn;
+            var defenders = ready.SelectMany(x => OperativeSampler.ColonyPawns(x.Pawn)).Distinct().Take(16).ToList();
+            var hostiles = ready.SelectMany(x => OperativeSampler.HostilePawns(x.Pawn)).Distinct().Take(16).ToList();
             var turrets = OperativeSampler.HostileTurrets(lead);
             var centre = BreachFinder.DefenderCentre(defenders, turrets);
-            var leadMap = OperativeSampler.MapFor(lead, defenders);
+            var leadMap = OperativeSampler.MapFor(lead, hostiles);
             // The breach point is chosen once per raid and kept for a while: recomputing it from whichever defenders
             // happen to be visible each cycle made the squad chase a different breach every order.
             var now = Find.TickManager.TicksGame;
@@ -207,7 +210,7 @@ public static class SquadDriver
                 {
                     var range = Math.Max(pawn.equipment?.PrimaryEq?.PrimaryVerb?.verbProps.range ?? 0f, 2f);
                     var roleCells = BreachFinder.RoleCells(
-                        pawn, OperativeSampler.MapFor(pawn, defenders), breaches, centre, melee, range, i, used);
+                        pawn, OperativeSampler.MapFor(pawn, hostiles), breaches, centre, melee, range, i, used);
                     snap = snap with { Destinations = roleCells.Concat(snap.Destinations).ToList() };
                 }
                 snap = snap with

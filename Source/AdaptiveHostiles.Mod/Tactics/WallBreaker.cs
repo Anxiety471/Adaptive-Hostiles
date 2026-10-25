@@ -18,7 +18,7 @@ public static class WallBreaker
         if (defender is null) return false;
 
         var parms = TraverseParms.For(pawn, Danger.Deadly, TraverseMode.PassAllDestroyableThings);
-        var path = pawn.Map.pathFinder.FindPath(pawn.Position, defender.Position, parms, PathEndMode.Touch);
+        var path = pawn.Map.pathFinder.FindPathNow(pawn.Position, defender, parms, null, PathEndMode.Touch);
         try
         {
             if (!path.Found) return false;

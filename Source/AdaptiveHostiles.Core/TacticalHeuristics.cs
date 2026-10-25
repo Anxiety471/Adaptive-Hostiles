@@ -8,6 +8,8 @@ public static class TacticalHeuristics
 {
     /// <summary>Score cost of standing where a hostile turret can shoot.</summary>
     public const float TurretPenalty = 0.5f;
+    /// <summary>Score cost of a cell where raiders recently fell (scaled by its 0..1 danger).</summary>
+    public const float DangerPenalty = 0.8f;
     public const float WoundedBelow = 0.35f;
     public const float FleeBelow = 0.2f;
     public const double FleeLossFraction = 0.5;
@@ -76,7 +78,7 @@ public static class TacticalHeuristics
     private static MovementCandidate? Best(IEnumerable<MovementCandidate> candidates, int slot)
     {
         var ranked = candidates
-            .OrderByDescending(c => c.Cover - c.Exposure - (c.InTurretRange ? TurretPenalty : 0))
+            .OrderByDescending(c => c.Cover - c.Exposure - (c.InTurretRange ? TurretPenalty : 0) - c.Danger * DangerPenalty)
             .ThenBy(c => c.Distance)
             .ThenBy(c => c.Id, StringComparer.Ordinal)
             .ToList();

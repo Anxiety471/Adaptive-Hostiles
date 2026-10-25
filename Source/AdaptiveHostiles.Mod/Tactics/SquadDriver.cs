@@ -16,6 +16,17 @@ public static class SquadDriver
 {
     private const int BreachKeepTicks = 6000;
     private static readonly Dictionary<string, (int Tick, List<BreachPoint> Points)> BreachMemory = new();
+    /// <summary>Where raiders went down, shared by every raid until the game is reloaded.</summary>
+    private static readonly DangerMemory Danger = new();
+    private static readonly Dictionary<string, RaidWatch> Watches = new(StringComparer.Ordinal);
+
+    /// <summary>Per-raid bookkeeping for danger recording and the damage-dealt measure.</summary>
+    private sealed class RaidWatch
+    {
+        public readonly HashSet<string> Fallen = new(StringComparer.Ordinal);
+        public readonly Dictionary<string, (Pawn Pawn, float Health)> Defenders = new(StringComparer.Ordinal);
+        public readonly Dictionary<string, float> Walls = new(StringComparer.Ordinal);
+    }
 
     private const int PollInterval = 10;
     /// <summary>After this long the vanilla exit logic is allowed again so a raid can never hang forever.</summary>
@@ -57,6 +68,9 @@ public static class SquadDriver
         States.Clear();
         Timings.Clear();
         Controlled.Clear();
+        BreachMemory.Clear();
+        Watches.Clear();
+        Danger.Clear();
     }
 
     public static void Tick(OperativeRegistry registry, IReadOnlyList<TrackedRaid> raids)
@@ -171,8 +185,10 @@ public static class SquadDriver
             // The breach point is chosen once per raid and kept for a while: recomputing it from whichever defenders
             // happen to be visible each cycle made the squad chase a different breach every order.
             var now = Find.TickManager.TicksGame;
-            if (!BreachMemory.TryGetValue(raid.Id, out var kept) || now - kept.Tick > BreachKeepTicks || kept.Points.Count == 0)
-                BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre));
+            if (!Watches.TryGetValue(raid.Id, out var watch)) Watches[raid.Id] = watch = new RaidWatch();
+            var lostNew = RecordLosses(watch, now);
+            if (!BreachMemory.TryGetValue(raid.Id, out var kept) || now - kept.Tick > BreachKeepTicks || kept.Points.Count == 0 || lostNew)
+                BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre, Danger, now));
             var breaches = kept.Points;
             if (kept.Tick == now)
                 Log.Message($"[Adaptive Hostiles] breach points for raid {raid.Id}: " + string.Join("; ", breaches.Select(b =>
@@ -194,10 +210,58 @@ public static class SquadDriver
                         pawn, OperativeSampler.MapFor(pawn, defenders), breaches, centre, melee, range, i, used);
                     snap = snap with { Destinations = roleCells.Concat(snap.Destinations).ToList() };
                 }
+                snap = snap with
+                {
+                    Destinations = snap.Destinations.Select(d => d with { Danger = Danger.Penalty(d.X, d.Z, now) }).ToList()
+                };
                 squad.Add(new SquadMember(snap, isOp, melee));
             }
-            return new SquadSnapshot(raid.Id, squad, sent, down, retreated, breaches);
+            return new SquadSnapshot(raid.Id, squad, sent, down, retreated, breaches,
+                DangerZones: Danger.Hotspots(now, 5), DamageDealt: MeasureDamage(watch, defenders, breaches), Defenders: defenders.Count);
         }
+
+        // Raiders that went down or died since the last cycle mark their cell as dangerous. True when there was one.
+        private bool RecordLosses(RaidWatch watch, int now)
+        {
+            var any = false;
+            foreach (var p in raid.Raiders)
+            {
+                if (p is null || !(p.Dead || p.Downed) || !watch.Fallen.Add(p.ThingID)) continue;
+                var cell = p.PositionHeld;
+                Danger.Record(cell.x, cell.z, now);
+                Log.Message($"[Adaptive Hostiles] danger: {p.LabelShort} {(p.Dead ? "died" : "went down")} at ({cell.x},{cell.z}).");
+                any = true;
+            }
+            return any;
+        }
+
+        // Defender health lost plus breach wall damage since the last cycle, as a sum of fractions; 0 means no progress.
+        private static double MeasureDamage(RaidWatch watch, List<Pawn> defenders, List<BreachPoint> breaches)
+        {
+            double damage = 0;
+            foreach (var (_, (pawn, health)) in watch.Defenders.ToList())
+                if (pawn.Dead || pawn.Downed) damage += health;
+            foreach (var d in defenders)
+            {
+                var hp = d.health.summaryHealth.SummaryHealthPercent;
+                if (watch.Defenders.TryGetValue(d.ThingID, out var prev)) damage += Math.Max(0, prev.Health - hp);
+                watch.Defenders[d.ThingID] = (d, hp);
+            }
+            foreach (var key in watch.Defenders.Where(kv => kv.Value.Pawn.Dead || kv.Value.Pawn.Downed).Select(kv => kv.Key).ToList())
+                watch.Defenders.Remove(key);
+            foreach (var bp in breaches.Where(b => b.WallX >= 0))
+            {
+                var wall = bp.WallX < 0 || Find.CurrentMap is null
+                    ? null : new IntVec3(bp.WallX, 0, bp.WallZ).GetEdifice(Find.CurrentMap);
+                var id = $"{bp.WallX},{bp.WallZ}";
+                var hp = wall is null || wall.Destroyed ? 0f : wall.HitPoints / (float)Math.Max(1, wall.MaxHitPoints);
+                if (watch.Walls.TryGetValue(id, out var before) && hp < before) damage += before - hp;
+                watch.Walls[id] = hp;
+            }
+            return damage;
+        }
+
+        public void Callout(string text) => Log.Message($"[Adaptive Hostiles] intent (raid {raid.Id}): {text}");
 
         public ITacticalMap CurrentMap(string pawnId)
         {

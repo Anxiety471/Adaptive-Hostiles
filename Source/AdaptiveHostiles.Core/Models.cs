@@ -34,7 +34,8 @@ public sealed record MovementCandidate(
     float Distance,
     string Purpose,
     bool Reachable,
-    bool InTurretRange = false);
+    bool InTurretRange = false,
+    float Danger = 0f);
 
 public sealed record TargetCandidate(
     string Id,

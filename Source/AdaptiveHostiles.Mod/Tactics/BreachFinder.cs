@@ -31,7 +31,7 @@ public static class BreachFinder
     /// </summary>
     public static List<BreachPoint> Find(
         Pawn reference, RimWorldTacticalMap map, IReadOnlyList<Pawn> defenders,
-        IReadOnlyList<Building_Turret> turrets, IntVec3 centre)
+        IReadOnlyList<Building_Turret> turrets, IntVec3 centre, DangerMemory danger, long now)
     {
         var candidates = new List<BreachPoint>();
         if (!centre.IsValid) return candidates;
@@ -52,8 +52,9 @@ public static class BreachFinder
             var sees = defenders.Count(d => d.Position.DistanceTo(cell) <= DefenderSightRange &&
                                             GenSight.LineOfSight(d.Position, cell, reference.Map));
             var covered = turrets.Count(t => cell.DistanceTo(t.Position) <= OperativeSampler.TurretRange(t) + 1f);
-            var weakness = 1f / (1 + sees + 2 * covered);
-            candidates.Add(new BreachPoint("", s.StandX, s.StandZ, weakness, sees, covered, s.WallX, s.WallZ));
+            var fell = danger.Penalty(s.StandX, s.StandZ, now);
+            var weakness = BreachRoute.Weakness(sees, covered, fell);
+            candidates.Add(new BreachPoint("", s.StandX, s.StandZ, weakness, sees, covered, s.WallX, s.WallZ, fell));
         }
         return BreachRoute.Pick(candidates, MaxPoints, MinSpacing);
     }
@@ -86,6 +87,9 @@ public static class BreachFinder
             }
 
             Add(result, pawn, map, FindCell(map, anchorX, anchorZ, slot, used), (isMelee ? "breach_" : "support_") + bp.Id, used);
+            // A stalled assault sends ranged raiders to open a wall too, so they are offered the breach cell as well.
+            if (!isMelee)
+                Add(result, pawn, map, FindCell(map, bp.X, bp.Z, slot, used), "breach_" + bp.Id, used);
 
             // Staging cell: further out on the raiders' side, where the squad gathers until the go signal.
             var sx = bp.X - fromX;

@@ -43,6 +43,10 @@ public static class BreachRoute
         return null;
     }
 
+    /// <summary>Weakness 0..1: falls with defenders who see the cell and turrets covering it, and with raider losses nearby.</summary>
+    public static float Weakness(int sees, int covered, float danger) =>
+        1f / (1 + sees + 2 * covered) * (1f - 0.8f * Math.Clamp(danger, 0f, 1f));
+
     /// <summary>
     /// Best candidates first by weakness (ties by position, so the order is stable), skipping any site closer than
     /// <paramref name="minSpacing"/> (Manhattan) to one already chosen or standing at the same wall.

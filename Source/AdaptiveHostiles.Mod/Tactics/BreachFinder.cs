@@ -49,8 +49,7 @@ public static class BreachFinder
         }
 
         var picked = new List<BreachPoint>();
-        foreach (var (point, _) in scored.OrderByDescending(s => s.Point.Weakness).ThenBy(s => s.Dist)
-                     .ThenBy(s => s.Point.X).ThenBy(s => s.Point.Z))
+        foreach (var (point, _) in scored.OrderByDescending(s => s.Point.Weakness).ThenBy(s => s.Point.X).ThenBy(s => s.Point.Z))
         {
             if (picked.Any(p => Math.Abs(p.X - point.X) + Math.Abs(p.Z - point.Z) < 8)) continue;
             picked.Add(point with { Id = $"B{picked.Count + 1}" });

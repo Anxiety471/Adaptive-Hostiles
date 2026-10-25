@@ -14,6 +14,9 @@ namespace AdaptiveHostiles.Mod.Tactics;
 /// </summary>
 public static class SquadDriver
 {
+    private const int BreachKeepTicks = 6000;
+    private static readonly Dictionary<string, (int Tick, List<BreachPoint> Points)> BreachMemory = new();
+
     private const int PollInterval = 10;
     /// <summary>After this long the vanilla exit logic is allowed again so a raid can never hang forever.</summary>
     private const int MaxSuppressTicks = 30000;
@@ -165,14 +168,21 @@ public static class SquadDriver
             var turrets = OperativeSampler.HostileTurrets(lead);
             var centre = BreachFinder.DefenderCentre(defenders, turrets);
             var leadMap = OperativeSampler.MapFor(lead, defenders);
-            var breaches = BreachFinder.Find(lead, leadMap, defenders, turrets, centre);
+            // The breach point is chosen once per raid and kept for a while: recomputing it from whichever defenders
+            // happen to be visible each cycle made the squad chase a different breach every order.
+            var now = Find.TickManager.TicksGame;
+            if (!BreachMemory.TryGetValue(raid.Id, out var kept) || now - kept.Tick > BreachKeepTicks || kept.Points.Count == 0)
+                BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre));
+            var breaches = kept.Points;
 
+            // A squad with no melee raider has nobody to push the breach, so its ranged raiders take that role.
+            var noMelee = ready.All(x => x.Pawn.equipment?.Primary is { } w && !w.def.IsMeleeWeapon);
             var used = new HashSet<(int, int)>();
             var squad = new List<SquadMember>();
             for (var i = 0; i < ready.Count; i++)
             {
                 var (pawn, isOp, _) = ready[i];
-                var melee = pawn.equipment?.Primary is null || pawn.equipment.Primary.def.IsMeleeWeapon;
+                var melee = noMelee || pawn.equipment?.Primary is null || pawn.equipment.Primary.def.IsMeleeWeapon;
                 var snap = OperativeSampler.Sample(pawn);
                 if (breaches.Count > 0)
                 {

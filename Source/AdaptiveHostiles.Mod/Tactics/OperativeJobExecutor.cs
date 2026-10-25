@@ -42,9 +42,9 @@ public static class OperativeJobExecutor
             go.checkOverrideOnExpire = true;
             Start(pawn, go, state);
             state.Destination = dest;
-            // A melee raider pushing a breach point of a sealed base has to break the wall or door in its way.
+            // A raider pushing a breach point of a sealed base has to break the wall or door in its way.
             if (order.Reason.StartsWith("breach_", StringComparison.Ordinal) && order.Stance != TacticalStance.Withdraw &&
-                IsMelee(pawn) && WallBreaker.TryFindBlocker(pawn, out var wall))
+                WallBreaker.TryFindBlocker(pawn, out var wall))
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, wall));
             // Ranged raiders backing a breach shoot the wall too instead of idling behind it.
             else if (order.Reason.StartsWith("support_", StringComparison.Ordinal) && target == null &&

@@ -115,6 +115,8 @@ public static class OperativeJobExecutor
     private static Job MakeAttack(Pawn pawn, Thing target)
     {
         var melee = IsMelee(pawn);
+        if (target is Building b && b.def.category == ThingCategory.Building)
+            Log.Message($"[Adaptive Hostiles] {pawn.LabelShort} attacks {b.LabelShort} at ({b.Position.x},{b.Position.z}).");
         var job = JobMaker.MakeJob(melee ? JobDefOf.AttackMelee : JobDefOf.AttackStatic, target);
         job.expiryInterval = 600;
         return job;

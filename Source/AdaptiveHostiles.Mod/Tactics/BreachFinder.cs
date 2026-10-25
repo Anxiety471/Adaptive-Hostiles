@@ -40,6 +40,8 @@ public static class BreachFinder
         {
             var cells = WallBreaker.PathCells(reference, target);
             var nodes = cells.Select(c => (c.x, c.z)).ToList();
+            Log.Message($"[Adaptive Hostiles] breach path to {target.LabelShort} at ({target.Position.x},{target.Position.z}): " +
+                        $"{nodes.Count} cells" + (nodes.Count > 0 ? $" from ({nodes[0].x},{nodes[0].z}) to ({nodes[^1].x},{nodes[^1].z})" : ""));
             var site = BreachRoute.Resolve(
                 nodes,
                 (x, z) => WallBreaker.BlockerAt(reference, new IntVec3(x, 0, z)) is not null,

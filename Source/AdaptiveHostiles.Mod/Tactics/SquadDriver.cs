@@ -174,6 +174,9 @@ public static class SquadDriver
             if (!BreachMemory.TryGetValue(raid.Id, out var kept) || now - kept.Tick > BreachKeepTicks || kept.Points.Count == 0)
                 BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre));
             var breaches = kept.Points;
+            if (kept.Tick == now)
+                Log.Message($"[Adaptive Hostiles] breach points for raid {raid.Id}: " + string.Join("; ", breaches.Select(b =>
+                    $"{b.Id} stand ({b.X},{b.Z}) {(b.WallX >= 0 ? $"wall ({b.WallX},{b.WallZ})" : "open")} weakness {b.Weakness:0.00}")));
 
             // A squad with no melee raider has nobody to push the breach, so its ranged raiders take that role.
             var noMelee = ready.All(x => x.Pawn.equipment?.Primary is { } w && !w.def.IsMeleeWeapon);
@@ -208,7 +211,7 @@ public static class SquadDriver
         public void Apply(string pawnId, OperativeOrder order)
         {
             if (!byId.TryGetValue(pawnId, out var pawn)) return;
-            Log.Message($"[Adaptive Hostiles] squad {pawn.LabelShort}: {order.Kind} ({order.X},{order.Z}) {order.Stance} - {order.Reason}");
+            Log.Message($"[Adaptive Hostiles] t{Find.TickManager.TicksGame} squad {pawn.LabelShort} [{(pawn.equipment?.Primary is null || pawn.equipment.Primary.def.IsMeleeWeapon ? "melee" : "ranged")} at ({pawn.Position.x},{pawn.Position.z}) hp {pawn.health.summaryHealth.SummaryHealthPercent:0.00}]: {order.Kind} ({order.X},{order.Z}) {order.Stance} - {order.Reason}");
             OperativeJobExecutor.Apply(pawn, order, StateOf(pawn), PinnedWall(pawn, order.Reason));
         }
 

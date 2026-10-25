@@ -83,8 +83,20 @@ public static class BreachFinder
                 (anchorX, anchorZ) = BreachRoute.SupportAnchor(bp.X, bp.Z, fromX, fromZ, range, slot, bp.WallX >= 0);
             }
 
-            Add(result, pawn, map, isMelee ? FindCell(map, anchorX, anchorZ, slot, used, wallSide) : FindCover(map, anchorX, anchorZ, slot, used, wallSide),
-                (isMelee ? "breach_" : "support_") + bp.Id, used);
+            var role = isMelee ? FindCell(map, anchorX, anchorZ, slot, used, wallSide) : FindCover(map, anchorX, anchorZ, slot, used, wallSide);
+            Add(result, pawn, map, role, (isMelee ? "breach_" : "support_") + bp.Id, used);
+            // A long way from the role cell: the next stop is a covered cell part of the way there, not one run across open ground.
+            if (role is { } rc)
+            {
+                var hx = rc.Item1 - pawn.Position.x;
+                var hz = rc.Item2 - pawn.Position.z;
+                var hlen = (float)Math.Sqrt(hx * hx + hz * hz);
+                // Far out the first stop is the edge of the exposed zone (25 cells from the role cell), so the walk in is not slowed.
+                var step = hlen > BreachRoute.HopFar + BreachRoute.HopStep ? hlen - BreachRoute.HopFar : BreachRoute.HopStep;
+                if (hlen > BreachRoute.HopTrigger)
+                    Add(result, pawn, map, FindCover(map, pawn.Position.x + (int)Math.Round(hx / hlen * step),
+                        pawn.Position.z + (int)Math.Round(hz / hlen * step), slot, used, null), "hop_" + bp.Id, used);
+            }
             // An open breach has no wall to break: melee also get a press cell past the opening toward the defenders, one per raider.
             if (isMelee && bp.WallX < 0 && centre.IsValid)
             {

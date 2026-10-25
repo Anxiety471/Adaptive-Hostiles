@@ -51,7 +51,7 @@ public sealed record SquadDecision(
 /// </summary>
 public sealed class SquadPlanner(IJevClient? client = null)
 {
-    public const int MaxMembers = 12;
+    public const int MaxMembers = 24;
     public const int MaxDestinationsPerMember = 12;
     public const int MaxTargets = 16;
 
@@ -68,7 +68,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
     public const float PointBlank = 3f;
 
     public async Task<SquadDecision> DecideAsync(SquadSnapshot squad, CancellationToken cancellationToken = default) =>
-        CapTargets(RangedEngage(Sync(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad);
+        CapTargets(RangedEngage(CoverHop(Sync(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad), squad);
 
     private async Task<SquadDecision> DecideCoreAsync(SquadSnapshot squad, CancellationToken cancellationToken)
     {
@@ -279,6 +279,27 @@ public sealed class SquadPlanner(IJevClient? client = null)
             var breach = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "breach_" + id);
             if (support is not null && breach is not null && !m.Snapshot.Targets.Any(t => t.Visible) && Near(m, support))
                 members[m.Snapshot.PawnId] = d with { DestinationId = breach.Id, Stance = TacticalStance.Aggressive };
+        }
+        return decision with { Members = members };
+    }
+
+    /// <summary>
+    /// Raiders far from their role cell advance cover to cover: the order goes to their hop cell (a covered cell on the way),
+    /// and the next cycle moves them on, so the whole squad crosses open ground in short waves instead of one run.
+    /// </summary>
+    private static SquadDecision CoverHop(SquadDecision decision, SquadSnapshot squad)
+    {
+        if (decision.Phase == SquadPhase.Gather || decision.BreachId is null) return decision;
+        var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        foreach (var m in squad.Members)
+        {
+            if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+            var dest = m.Snapshot.Destinations.FirstOrDefault(c => c.Id == d.DestinationId);
+            if (dest is null || !(dest.Purpose.StartsWith("breach_", StringComparison.Ordinal) || dest.Purpose.StartsWith("support_", StringComparison.Ordinal))) continue;
+            if (Dist(m, dest.X, dest.Z) <= BreachRoute.HopTrigger) continue;
+            var hop = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "hop_" + Effective(m, decision.BreachId));
+            if (hop is not null && Dist(m, hop.X, hop.Z) > 2)
+                members[m.Snapshot.PawnId] = d with { DestinationId = hop.Id };
         }
         return decision with { Members = members };
     }

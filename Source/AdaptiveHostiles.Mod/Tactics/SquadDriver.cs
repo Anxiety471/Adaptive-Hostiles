@@ -175,6 +175,10 @@ public static class SquadDriver
             raid.Status(out var sent, out var down, out var retreated);
             if (!ordered.Any(x => x.Dist < float.MaxValue || x.Turrets))
                 return new SquadSnapshot(raid.Id, new List<SquadMember>(), sent, down, retreated);
+            var unordered = members.Where(p => BlockOf(p.ThingID) != PawnBlock.None).Select(p => $"{p.LabelShort} ({BlockOf(p.ThingID)})")
+                .Concat(ordered.OrderByDescending(x => x.IsOp).ThenBy(x => x.Pawn.thingIDNumber).Skip(SquadPlanner.MaxMembers).Select(x => $"{x.Pawn.LabelShort} (over cap)")).ToList();
+            if (unordered.Count > 0 && Find.TickManager.TicksGame % 600 < PollInterval)
+                Log.Message($"[Adaptive Hostiles] raid {raid.Id}: no order this cycle for " + string.Join(", ", unordered));
             var ready = ordered.OrderByDescending(x => x.IsOp).ThenBy(x => x.Pawn.thingIDNumber).Take(SquadPlanner.MaxMembers)
                 .Select(x => (x.Pawn, x.IsOp, x.Dist)).ToList();
 

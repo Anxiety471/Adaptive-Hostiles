@@ -852,6 +852,17 @@ await Check("ranged: shoot point blank instead of kiting, and move up at an open
     Require(walled.Members["r1"].DestinationId == "r_s", "ranged left its support cell at a walled breach");
 });
 
+await Check("cover hop: a raider far from its role cell advances through a cover cell, a near one goes straight", async () =>
+{
+    MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
+    SquadSnapshot Snap(int x) => new("s", new[] { new SquadMember(new OperativeSnapshot("r1", x, 90, 1f, "x", 2,
+        new[] { C("r_s", "support_B1", 130), C("r_h", "hop_B1", x + 10), C("r_st", "stage_B1", 100) },
+        new[] { new TargetCandidate("hidden", 160, 90, 0.9f, false) }), false, false) }, 1, 0, 0,
+        new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0, 139, 90) }, SquadPhase.Breach);
+    Require((await new SquadPlanner().DecideAsync(Snap(100))).Members["r1"].DestinationId == "r_h", "far raider crossed open ground in one run");
+    Require((await new SquadPlanner().DecideAsync(Snap(125))).Members["r1"].DestinationId == "r_s", "near raider took a pointless hop");
+});
+
 await Check("go signal: waits for every healthy member, a hurt one does not hold it", async () =>
 {
     var squad = StagedSquad(arrived: true);

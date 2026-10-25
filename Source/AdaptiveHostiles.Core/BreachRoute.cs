@@ -12,6 +12,13 @@ public readonly record struct BreachSite(int StandX, int StandZ, int WallX, int 
 /// </summary>
 public static class BreachRoute
 {
+    /// <summary>Farther than this from its role cell, a raider advances through a cover hop cell first.</summary>
+    public const float HopTrigger = 14f;
+    /// <summary>A cover hop is this many cells along the way to the role cell.</summary>
+    public const float HopStep = 10f;
+    /// <summary>Beyond this distance from the role cell the first hop ends here; short hops start from this zone.</summary>
+    public const float HopFar = 25f;
+
     /// <summary>Open bases have no wall; the squad approaches to this many cells short of the path's end.</summary>
     public const int OpenSetback = 6;
     /// <summary>Ranged support stands this close behind the breach cell: within a few cells of the melee and in weapon range of the wall.</summary>

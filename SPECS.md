@@ -80,6 +80,24 @@ A raid that contains an Operative is commanded as one squad by Jev, not only the
 - A member whose answer is invalid, or whose cell another member already took, uses the local heuristic for that member only. A wholly invalid squad answer uses the local squad fallback.
 - Members beyond the cap, blocked, downed or in a Jev-ordered exit are left to their current job / vanilla AI.
 
+### Turrets and engagement
+
+- Hostile powered turrets are part of the battlefield: they are offered as visible targets (kind `turret`, with range) and candidate cells inside their range are flagged and penalised, so Jev can focus a turret or stay out of its fire.
+- Squad members with no enemy pawn or turret within the scan radius (60 cells) are left to vanilla assault AI so they keep marching on the colony; the squad only commands engaged raiders.
+- Squad cadence is slower than the lone Operative: 360–600 tick cooldown and 360 tick commitment, so orders are not replaced mid-walk.
+- Every member must get a distinct destination.
+
+### Breach and roles
+
+- The Mod scores **breach points** around the defenders: reachable cells near the colony whose weakness falls with every defender who sees them and every turret covering them. The kill zone in front of the defenders scores low. The top 3 (`B1`..`B3`) go to Jev in a `breach` Choice; the squad answers one.
+- Each member also gets role cells for every breach point: **melee** a `breach_<id>` cell at the point, **ranged** a `support_<id>` cell behind it on the raiders' side. All members must use the chosen breach point's cells, and ranged members may not take the melee `breach_` cells, so melee push in front with ranged backup from behind, together. Offline, the weakest breach is chosen and roles follow it.
+- **Synchronized assault.** Each raider also gets a `stage_<id>` cell about 16 cells out on the raiders' side. The squad answer carries a `phase`: `gather` (everyone goes to its staging cell and holds, nobody presses), `breach` (the go signal: melee through the breach, ranged support behind) or `press`. Local code owns the go signal: breach/press are only allowed once at least **75%** of members stand within 4 cells of their staging cell; before that every healthy member is sent to its staging cell with a defensive stance, whatever the model said. Wounded members still withdraw. Once the squad has gone it does not return to gathering, and after 4 gather cycles it goes anyway so a stuck raider cannot stall the raid.
+- **Sealed bases.** A melee raider pushing a `breach_` cell finds the first wall or door on the shortest path (passing destroyable things) to the defenders and attacks it, so a walled colony is broken into rather than circled. Blocking the vanilla retreat transition also suppresses its "are leaving" message.
+- **Melee first, ranged backup.** After the go signal ranged raiders stay at their staging cell until at least half the melee stand at the breach, none are left, or 4 cycles pass; only then do they take their support cells. Ranged raiders at a sealed breach shoot the wall as well.
+- **Aim.** Firing positions are short to medium range (30–65% of weapon range). An order identical to the one a raider is already carrying out (same cell, walking, shooting or holding) does not restart its job.
+- **Flee.** Only a raider under 20% health in a raid that has lost at least half its members may flee; any other flee answer becomes withdraw.
+- Jev's orders own the squad's movement: each order clears the pawn's queued jobs and ends with a `Wait_Combat` hold, so vanilla assault AI cannot walk a raider elsewhere between orders.
+
 ### Aggression and survival
 
 - Default posture is aggressive: press the attack from the best-covered firing position, advance or flank cell; spread members over different approaches and focus fire.
@@ -88,7 +106,7 @@ A raid that contains an Operative is commanded as one squad by Jev, not only the
 
 ### Fleeing
 
-- The base game's flee check is disabled for squad-controlled raiders: their lord may not enter an exit toil, and panic/flee mental states are refused. A vanilla exit duty never blocks the tactical loop. Vanilla exit logic is allowed again after 30000 ticks of squad control so a raid cannot hang.
+- The base game's flee check is disabled for squad-controlled raiders: their lord may not enter an exit, flee, steal-and-leave or kidnap toil, and panic/flee mental states are refused. A vanilla exit duty never blocks the tactical loop. Vanilla exit logic is allowed again after 30000 ticks of squad control so a raid cannot hang.
 - **The Operative never flees.** A model `flee` answer for it is downgraded to `withdraw`.
 - For ordinary raiders **Jev decides** whether to flee (`flee` stance, an exit-map job). Without a model answer the local fallback flees only a raider below **20%** health once at least **half** the raid is down or gone.
 

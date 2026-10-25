@@ -34,11 +34,11 @@ public sealed class OperativePlanner(IJevClient? client = null)
 
         var moveOptions = new Dictionary<string, string> { ["hold"] = "Remain at the current cell." };
         foreach (var candidate in moves.Values)
-            moveOptions[candidate.Id] = $"Go to cell ({candidate.X},{candidate.Z}), {candidate.Purpose}; cover {candidate.Cover:0.00}, exposure {candidate.Exposure:0.00}, distance {candidate.Distance:0.0}.";
+            moveOptions[candidate.Id] = $"Go to cell ({candidate.X},{candidate.Z}), {candidate.Purpose}; cover {candidate.Cover:0.00}, exposure {candidate.Exposure:0.00}, distance {candidate.Distance:0.0}{(candidate.InTurretRange ? ", IN RANGE OF A HOSTILE TURRET" : "")}.";
 
         var targetOptions = new Dictionary<string, string> { ["none"] = "No target; avoid firing." };
         foreach (var target in targets.Values)
-            targetOptions[target.Id] = $"Visible enemy at ({target.X},{target.Z}), threat {target.Threat:0.00}.";
+            targetOptions[target.Id] = $"Visible {(target.Kind == "turret" ? "turret" : "enemy")} at ({target.X},{target.Z}), threat {target.Threat:0.00}.";
 
         var questions = new Dictionary<string, object>
         {

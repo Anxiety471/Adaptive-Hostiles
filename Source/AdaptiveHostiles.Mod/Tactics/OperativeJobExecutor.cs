@@ -34,21 +34,49 @@ public static class OperativeJobExecutor
         if (order.Kind == OrderKind.MoveTo)
         {
             var dest = new IntVec3(order.X, 0, order.Z);
+            // Re-issuing the same order every cycle would restart the aim; let a walk or a shoot run on.
+            if (AlreadyCarryingOut(pawn, dest, state)) return;
             var go = JobMaker.MakeJob(JobDefOf.Goto, dest);
-            go.locomotionUrgency = order.Stance == TacticalStance.Defensive
+            go.locomotionUrgency = order.Stance == TacticalStance.Defensive || pawn.Position.DistanceTo(dest) < 15f
                 ? LocomotionUrgency.Jog : LocomotionUrgency.Sprint;
             go.checkOverrideOnExpire = true;
             Start(pawn, go, state);
             state.Destination = dest;
+            // A raider pushing a breach point of a sealed base has to break the wall or door in its way.
+            if (order.Reason.StartsWith("breach_", StringComparison.Ordinal) && order.Stance != TacticalStance.Withdraw &&
+                WallBreaker.TryFindBlocker(pawn, out var wall))
+                pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, wall));
+            // Ranged raiders backing a breach shoot the wall too instead of idling behind it.
+            else if (order.Reason.StartsWith("support_", StringComparison.Ordinal) && target == null &&
+                     order.Stance != TacticalStance.Withdraw && !IsMelee(pawn) && WallBreaker.TryFindBlocker(pawn, out var cover))
+                pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, cover));
             if (target != null && order.Stance != TacticalStance.Withdraw)
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, target));
+            // Never leave the queue empty: when it runs out vanilla assault AI would walk the raider elsewhere.
+            pawn.jobs.jobQueue.EnqueueLast(MakeHold());
             return;
         }
 
         // Hold: stay put, shooting only if the chosen target is actually hittable from here.
         state.Destination = null;
         if (target != null && order.Stance != TacticalStance.Withdraw && CanAttackFromHere(pawn, target))
+        {
             Start(pawn, MakeAttack(pawn, target), state);
+            pawn.jobs.jobQueue.EnqueueLast(MakeHold());
+        }
+        else
+        {
+            Start(pawn, MakeHold(), state);
+        }
+    }
+
+    /// <summary>Stand and shoot whatever comes into view; keeps vanilla movement AI from taking over between orders.</summary>
+    private static Job MakeHold()
+    {
+        var wait = JobMaker.MakeJob(JobDefOf.Wait_Combat);
+        wait.expiryInterval = 900;
+        wait.checkOverrideOnExpire = true;
+        return wait;
     }
 
     /// <summary>Jev-ordered exit: walk to the best map edge spot and leave. Never used for the Operative.</summary>
@@ -66,6 +94,7 @@ public static class OperativeJobExecutor
 
     private static void Start(Pawn pawn, Job job, OperativeRuntimeState state)
     {
+        pawn.jobs.ClearQueuedJobs();
         pawn.jobs.StartJob(job, JobCondition.InterruptForced);
         state.Job = job;
         state.Fleeing = false;
@@ -80,22 +109,34 @@ public static class OperativeJobExecutor
         state.Target = null;
     }
 
-    private static Job MakeAttack(Pawn pawn, Pawn target)
+    private static Job MakeAttack(Pawn pawn, Thing target)
     {
-        var melee = pawn.equipment?.Primary == null || pawn.equipment.Primary.def.IsMeleeWeapon;
+        var melee = IsMelee(pawn);
         var job = JobMaker.MakeJob(melee ? JobDefOf.AttackMelee : JobDefOf.AttackStatic, target);
         job.expiryInterval = 600;
         return job;
     }
 
-    private static bool CanAttackFromHere(Pawn pawn, Pawn target)
+    private static bool AlreadyCarryingOut(Pawn pawn, IntVec3 dest, OperativeRuntimeState state)
+    {
+        var job = pawn.CurJob;
+        if (job is null) return false;
+        if (state.Destination == dest && job == state.Job) return true; // still walking to the same cell
+        if (pawn.Position.DistanceTo(dest) > 2f) return false;
+        var def = job.def;
+        return def == JobDefOf.Wait_Combat || def == JobDefOf.AttackStatic || def == JobDefOf.AttackMelee;
+    }
+
+    private static bool IsMelee(Pawn pawn) => pawn.equipment?.Primary == null || pawn.equipment.Primary.def.IsMeleeWeapon;
+
+    private static bool CanAttackFromHere(Pawn pawn, Thing target)
     {
         var verb = pawn.equipment?.PrimaryEq?.PrimaryVerb;
         return verb == null ? pawn.Position.AdjacentTo8WayOrInside(target.Position) : verb.CanHitTarget(target);
     }
 
-    /// <summary>Maps an offered target ID back to a live hostile pawn; anything else is rejected.</summary>
-    private static Pawn? ResolveTarget(Pawn self, string? targetId)
+    /// <summary>Maps an offered target ID back to a live hostile pawn or turret; anything else is rejected.</summary>
+    private static Thing? ResolveTarget(Pawn self, string? targetId)
     {
         if (targetId is null) return null;
         foreach (var p in self.Map.mapPawns.AllPawnsSpawned)
@@ -104,6 +145,8 @@ public static class OperativeJobExecutor
             if (p.Dead || p.Downed || p.Faction is null || !self.Faction.HostileTo(p.Faction)) return null;
             return p;
         }
+        foreach (var t in OperativeSampler.HostileTurrets(self))
+            if (OperativeSampler.TargetIdFor(t) == targetId) return t;
         return null;
     }
 }
@@ -113,7 +156,7 @@ public sealed class OperativeRuntimeState
 {
     public Job? Job;
     public IntVec3? Destination;
-    public Pawn? Target;
+    public Thing? Target;
     public float LastHealth = 1f;
     public bool HadVisibleTarget;
     /// <summary>True while a Jev-ordered exit job is running; the pawn is left alone until it ends.</summary>

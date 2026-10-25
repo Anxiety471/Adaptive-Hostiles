@@ -7,12 +7,12 @@ namespace AdaptiveHostiles.Mod.Tactics;
 /// <summary>Builds the snapshot Jev sees: self, visible hostiles, allies and legal destinations.</summary>
 public static class OperativeSampler
 {
-    public const float ThreatScanRadius = 45f;
+    public const float ThreatScanRadius = 60f;
     public const float AllyRadius = 15f;
     public const int MaxThreats = 8;
     private const string TargetPrefix = "pawn_";
 
-    public static string TargetIdFor(Pawn p) => TargetPrefix + p.ThingID;
+    public static string TargetIdFor(Thing t) => TargetPrefix + t.ThingID;
 
     public static List<Pawn> HostilePawns(Pawn self)
     {
@@ -29,8 +29,27 @@ public static class OperativeSampler
         return result;
     }
 
+    /// <summary>Armed hostile turrets within scan range; a turret is a threat that is not a pawn.</summary>
+    public static List<Building_Turret> HostileTurrets(Pawn self)
+    {
+        var result = new List<Building_Turret>();
+        if (!self.Spawned || self.Faction is null) return result;
+        foreach (var t in self.Map.listerThings.ThingsInGroup(ThingRequestGroup.BuildingArtificial))
+        {
+            if (t is not Building_Turret turret || !turret.Spawned || turret.Faction is null) continue;
+            if (!self.Faction.HostileTo(turret.Faction)) continue;
+            if (turret.GetComp<CompPowerTrader>() is { PowerOn: false }) continue;
+            if (!turret.Position.InHorDistOf(self.Position, ThreatScanRadius)) continue;
+            result.Add(turret);
+        }
+        return result;
+    }
+
+    public static float TurretRange(Building_Turret t) => t.AttackVerb?.verbProps.range ?? 0f;
+
     public static RimWorldTacticalMap MapFor(Pawn self, List<Pawn> hostiles) =>
-        new(self, hostiles.Take(MaxThreats).Select(p => p.Position).ToList());
+        new(self, hostiles.Take(MaxThreats).Select(p => p.Position).ToList(),
+            HostileTurrets(self).Select(t => (t.Position, TurretRange(t))).ToList());
 
     public static OperativeSnapshot Sample(Pawn self)
     {
@@ -52,6 +71,15 @@ public static class OperativeSampler
             var armed = p.equipment?.Primary != null ? 0.5f : 0.2f;
             targets.Add(new TargetCandidate(TargetIdFor(p), p.Position.x, p.Position.z,
                 armed + closeness * 0.5f, true));
+        }
+
+        foreach (var t in HostileTurrets(self))
+        {
+            if (targets.Count >= OperativePlanner.MaxTargets - 1) break;
+            if (!GenSight.LineOfSight(self.Position, t.Position, self.Map)) continue;
+            var closeness = 1f - Math.Min(1f, t.Position.DistanceTo(self.Position) / ThreatScanRadius);
+            targets.Add(new TargetCandidate(TargetPrefix + t.ThingID, t.Position.x, t.Position.z,
+                0.7f + closeness * 0.3f, true, "turret", TurretRange(t)));
         }
 
         var allies = self.Map.mapPawns.AllPawnsSpawned.Count(p =>

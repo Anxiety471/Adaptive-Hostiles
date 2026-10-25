@@ -175,7 +175,7 @@ public static class SquadDriver
             raid.Status(out var sent, out var down, out var retreated);
             if (!ordered.Any(x => x.Dist < float.MaxValue || x.Turrets))
                 return new SquadSnapshot(raid.Id, new List<SquadMember>(), sent, down, retreated);
-            var ready = ordered.OrderByDescending(x => x.IsOp).ThenBy(x => x.Dist).Take(SquadPlanner.MaxMembers)
+            var ready = ordered.OrderByDescending(x => x.IsOp).ThenBy(x => x.Pawn.thingIDNumber).Take(SquadPlanner.MaxMembers)
                 .Select(x => (x.Pawn, x.IsOp, x.Dist)).ToList();
 
             // Where the colony is weakest, found once for the whole squad from the lead raider's map view.

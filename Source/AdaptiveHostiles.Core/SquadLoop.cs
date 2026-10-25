@@ -181,10 +181,12 @@ public sealed class SquadLoop
         if (stall.RangedOpensWall)
         {
             // The wall the squad is not already pushing: the weakest other point.
-            var other = snapshot.Breaches.Where(b => b.Id != main.Id)
-                .OrderByDescending(b => b.Weakness).ThenBy(b => b.Id, StringComparer.Ordinal).FirstOrDefault() ?? main;
-            members = members.Select(m => !m.IsMelee && m.GroupBreachId is null
-                ? m with { IsMelee = true, GroupBreachId = other.Id } : m).ToList();
+            // Only a point with a wall needs opening; an open point has nothing for ranged to break.
+            var other = snapshot.Breaches.Where(b => b.Id != main.Id && b.WallX >= 0)
+                .OrderByDescending(b => b.Weakness).ThenBy(b => b.Id, StringComparer.Ordinal).FirstOrDefault();
+            if (other is not null)
+                members = members.Select(m => !m.IsMelee && m.GroupBreachId is null
+                    ? m with { IsMelee = true, GroupBreachId = other.Id } : m).ToList();
         }
         return snapshot with { BreachPoints = points, Members = members };
     }

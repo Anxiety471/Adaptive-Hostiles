@@ -56,7 +56,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
     public const int MaxTargets = 16;
 
     /// <summary>Raiders count as gathered when this fraction stands at their staging cell.</summary>
-    public const double ReadyFraction = 0.75;
+    public const double ReadyFraction = 1.0;
     public const float StagedWithin = 4f;
     /// <summary>After this many gather cycles the squad goes anyway, so a blocked member cannot stall the raid.</summary>
     public const int MaxGatherCycles = 4;
@@ -64,9 +64,11 @@ public sealed class SquadPlanner(IJevClient? client = null)
     public const float PressWithin = 3f;
     /// <summary>No more raiders than this are ordered onto one target; the rest take their next best.</summary>
     public const int MaxPerTarget = 3;
+    /// <summary>A ranged raider with a visible enemy this close shoots from where it stands instead of repositioning.</summary>
+    public const float PointBlank = 3f;
 
     public async Task<SquadDecision> DecideAsync(SquadSnapshot squad, CancellationToken cancellationToken = default) =>
-        CapTargets(Sync(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad);
+        CapTargets(RangedEngage(Sync(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad);
 
     private async Task<SquadDecision> DecideCoreAsync(SquadSnapshot squad, CancellationToken cancellationToken)
     {
@@ -253,6 +255,37 @@ public sealed class SquadPlanner(IJevClient? client = null)
         return decision with { Members = members };
     }
 
+    /// <summary>
+    /// Ranged raiders do not kite or hold a firing distance: an enemy within <see cref="PointBlank"/> cells is shot where the raider
+    /// stands. Once the squad has gone, a ranged raider that reached its support cell at an open breach with no one in sight moves
+    /// up to the opening instead of idling outside.
+    /// </summary>
+    private static SquadDecision RangedEngage(SquadDecision decision, SquadSnapshot squad)
+    {
+        var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        foreach (var m in squad.Members.Where(m => !m.IsMelee))
+        {
+            if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+            var close = m.Snapshot.Targets.Where(t => t.Visible && Dist(m, t.X, t.Z) <= PointBlank)
+                .OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).FirstOrDefault();
+            if (close is not null)
+            {
+                members[m.Snapshot.PawnId] = d with { DestinationId = "hold", TargetId = close.Id, Stance = TacticalStance.Aggressive };
+                continue;
+            }
+            var id = Effective(m, decision.BreachId);
+            if (decision.Phase == SquadPhase.Gather || decision.BreachId is null || squad.Breaches.FirstOrDefault(b => b.Id == id) is not { WallX: < 0 }) continue;
+            var support = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "support_" + id);
+            var breach = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "breach_" + id);
+            if (support is not null && breach is not null && !m.Snapshot.Targets.Any(t => t.Visible) && Near(m, support))
+                members[m.Snapshot.PawnId] = d with { DestinationId = breach.Id, Stance = TacticalStance.Aggressive };
+        }
+        return decision with { Members = members };
+    }
+
+    private static double Dist(SquadMember m, int x, int z) =>
+        Math.Sqrt(Math.Pow(m.Snapshot.X - x, 2) + Math.Pow(m.Snapshot.Z - z, 2));
+
     private static bool Near(SquadMember m, MovementCandidate c)
     {
         var dx = m.Snapshot.X - c.X;
@@ -278,7 +311,8 @@ public sealed class SquadPlanner(IJevClient? client = null)
             var cell = StageCell(m, Effective(m, breachId));
             var dx = cell is null ? 0 : m.Snapshot.X - cell.X;
             var dz = cell is null ? 0 : m.Snapshot.Z - cell.Z;
-            if (cell is null || Math.Sqrt(dx * dx + dz * dz) <= StagedWithin) staged++;
+            var hurt = decision.Members.TryGetValue(m.Snapshot.PawnId, out var md) && md.Stance is TacticalStance.Withdraw or TacticalStance.Flee;
+            if (cell is null || hurt || Math.Sqrt(dx * dx + dz * dz) <= StagedWithin) staged++;
         }
         var ready = squad.Members.Count == 0 || staged >= Math.Ceiling(squad.Members.Count * ReadyFraction)
                     || squad.PreviousPhase != SquadPhase.Gather || squad.GatherCycles >= MaxGatherCycles;

@@ -833,6 +833,36 @@ await Check("squad: melee push the weakest breach, ranged support behind it, in 
     await Task.CompletedTask;
 });
 
+await Check("ranged: shoot point blank instead of kiting, and move up at an open breach when idle", async () =>
+{
+    MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
+    SquadSnapshot Snap(int rx, TargetCandidate[] tgt, bool walled)
+    {
+        var r = new OperativeSnapshot("r1", rx, 90, 1f, "x", 2, new[] { C("r_s", "support_B1", 130), C("r_b", "breach_B1", 140), C("r_st", "stage_B1", 100) }, tgt);
+        return new SquadSnapshot("s", new[] { new SquadMember(r, false, false) }, 1, 0, 0,
+            new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0, walled ? 139 : -1, walled ? 90 : -1) }, SquadPhase.Breach);
+    }
+    var far = new TargetCandidate("far", 160, 90, 0.9f, true);
+    var near = new TargetCandidate("near", 132, 91, 0.3f, true);
+    var d = await new SquadPlanner().DecideAsync(Snap(130, new[] { far, near }, false));
+    Require(d.Members["r1"].DestinationId == "hold" && d.Members["r1"].TargetId == "near", "ranged kited or ignored the adjacent enemy");
+    var idle = await new SquadPlanner().DecideAsync(Snap(130, new[] { new TargetCandidate("hidden", 160, 90, 0.9f, false) }, false));
+    Require(idle.Members["r1"].DestinationId == "r_b", "ranged idled at its support cell at an open breach");
+    var walled = await new SquadPlanner().DecideAsync(Snap(130, new[] { new TargetCandidate("hidden", 160, 90, 0.9f, false) }, true));
+    Require(walled.Members["r1"].DestinationId == "r_s", "ranged left its support cell at a walled breach");
+});
+
+await Check("go signal: waits for every healthy member, a hurt one does not hold it", async () =>
+{
+    var squad = StagedSquad(arrived: true);
+    var late = squad.Members[1] with { Snapshot = squad.Members[1].Snapshot with { X = 40 } };
+    var three = squad with { Members = new[] { squad.Members[0], late } };
+    Require((await new SquadPlanner().DecideAsync(three)).Phase == SquadPhase.Gather, "went before the last member staged");
+    var hurt = late with { Snapshot = late.Snapshot with { HealthFraction = 0.2f } };
+    Require((await new SquadPlanner().DecideAsync(squad with { Members = new[] { squad.Members[0], hurt } })).Phase == SquadPhase.Breach,
+        "a withdrawing member held the squad");
+});
+
 await Check("squad: raiders gather at staging cells and only go together on the signal", async () =>
 {
     var far = StagedSquad(arrived: false);

@@ -768,6 +768,35 @@ await Check("press through: melee at an open breach go on to distinct press cell
     Require((await new SquadPlanner().DecideAsync(Snap(M("m5", 130, 90, 134, 0.2f)))).Members["m5"].Stance == TacticalStance.Withdraw, "hurt melee pressed on");
 });
 
+await Check("commitment: a squad that is not losing presses on, a losing one may pull back, a cornered wounded raider fights", () =>
+{
+    MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
+    SquadMember M(string id, float hp, params TargetCandidate[] t) => new(new OperativeSnapshot(id, 120, 90, hp, "x", 1,
+        new[] { C("away", "retreat", 60), C("push", "press_B1", 135), C("stage", "stage_B1", 100) }, t), false, true);
+    var far = new TargetCandidate("c1", 150, 90, 0.8f, true);
+    var near = new TargetCandidate("c2", 123, 90, 0.8f, true);
+    SquadDecision Order(params SquadMember[] ms) => new(SquadTactic.Regroup, null, ms.ToDictionary(m => m.Snapshot.PawnId,
+        m => new OperativeDecision("away", null, TacticalStance.Aggressive, true)), true, "B1", SquadPhase.Breach);
+    SquadSnapshot Snap(int sent, int down, params SquadMember[] ms) => new("s", ms, sent, down, 0, new[] { new BreachPoint("B1", 130, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
+
+    var strong = Snap(4, 1, M("a", 1f, far), M("b", 1f, far), M("c", 1f, far));
+    var pressed = SquadCommitment.Apply(Order(strong.Members.ToArray()), strong);
+    Require(pressed.Members.Values.All(d => d.DestinationId == "push" && d.Stance == TacticalStance.Aggressive), "healthy raiders walked away from the fight");
+    Require(pressed.Tactic == SquadTactic.SuppressAndPush, "a regroup plan survived while winning");
+
+    var losing = Snap(8, 5, M("a", 1f, far, near, near, near), M("b", 0.3f, far));
+    Require(SquadCommitment.Losing(losing), "a wrecked squad was not called losing");
+    Require(SquadCommitment.Apply(Order(losing.Members.ToArray()), losing).Members.Values.All(d => d.DestinationId == "away"), "a losing squad was forced forward");
+
+    var wounded = Snap(4, 1, M("w", 0.2f, near), M("x", 0.2f, far));
+    var order = Order(wounded.Members.ToArray());
+    order = order with { Members = order.Members.ToDictionary(k => k.Key, k => k.Value with { Stance = TacticalStance.Withdraw }) };
+    var d2 = SquadCommitment.Apply(order, wounded).Members;
+    Require(d2["w"].Stance == TacticalStance.Aggressive && d2["w"].DestinationId == "push", "a cornered wounded raider ran instead of fighting");
+    Require(d2["x"].Stance == TacticalStance.Withdraw, "a wounded raider away from the fight was kept in it");
+    return Task.CompletedTask;
+});
+
 await Check("withdraw: a hurt raider only goes to safe cells, never the breach or support cell, and holds when there is none", () =>
 {
     MovementCandidate C(string id, string purpose) => new(id, 1, 1, 0.5f, 0.2f, 10, purpose, true);

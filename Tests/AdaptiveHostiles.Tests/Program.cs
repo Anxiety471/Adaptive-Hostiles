@@ -1106,6 +1106,52 @@ await Check("a failed vision request backs off and later retries", async () =>
     Require(scheduler.CanBegin("m"), "back-off never ends");
 });
 
+await Check("ranged/melee sync: melee hold for cover, ranged cover the melee and only follow once melee are through", async () =>
+{
+    MovementCandidate C(string id, string purpose, int x, int z = 90) => new(id, x, z, 0.5f, 0.2f, 10, purpose, true);
+    var near = new TargetCandidate("c_near", 150, 90, 0.8f, true);   // defender by the opening, close to the melee
+    var far = new TargetCandidate("c_far", 150, 110, 0.9f, true);    // higher threat, but away from the melee
+    SquadMember Melee(string id, int x) => new(new OperativeSnapshot(id, x, 90, 1f, "x", 1,
+        new[] { C($"{id}_b", "breach_B1", 130), C($"{id}_p", "press_B1", 134) }, new[] { near, far }), false, true);
+    SquadMember Ranged(string id, int x) => new(new OperativeSnapshot(id, x, 90, 1f, "x", 1,
+        new[] { C($"{id}_s", "support_B1", 128, 94), C($"{id}_p", "press_B1", 134) }, new[] { near, far }), false, false);
+    SquadSnapshot Snap(int breachCycles, params SquadMember[] ms) => new("s", ms, ms.Length, 0, 0,
+        new[] { new BreachPoint("B1", 130, 90, 0.9f, 0, 0) }, SquadPhase.Breach, 0, breachCycles);
+    var coverFire = new FakeClient("""{"answers":{"tactic":{"type":"choice","choice":"suppress_push"},"focus":{"type":"choice","choice":"none"},"breach":{"type":"choice","choice":"B1"},"phase":{"type":"choice","choice":"breach"},"melee_push":{"type":"choice","choice":"hold_for_cover"},"ranged_role":{"type":"choice","choice":"cover_fire"}}}""");
+
+    // melee 10 cells out, ranged still 30 cells away: melee hold, then go once the wait runs out
+    var wait = Snap(0, Melee("m1", 120), Ranged("r1", 98));
+    var held = await new SquadPlanner().DecideAsync(wait);
+    Require(held.Members["m1"].DestinationId == "hold" && held.Members["m1"].Stance == TacticalStance.Defensive, "melee dashed ahead of unready ranged");
+    var timeout = await new SquadPlanner().DecideAsync(Snap(SquadCoordination.MaxCoverWaitCycles, Melee("m1", 120), Ranged("r1", 98)));
+    Require(timeout.Members["m1"].DestinationId == "m1_b", "melee waited past the timeout");
+    // ranged already in position: no hold
+    var ready = await new SquadPlanner().DecideAsync(Snap(0, Melee("m1", 120), Ranged("r1", 128)));
+    Require(ready.Members["m1"].DestinationId != "hold", "melee held although the ranged were in position");
+    // a melee raider already at the opening is never held
+    var atGap = await new SquadPlanner().DecideAsync(Snap(0, Melee("m1", 129), Ranged("r1", 98)));
+    Require(atGap.Members["m1"].DestinationId != "hold", "committed melee was held");
+    // the model can say go even though the ranged are not ready
+    var go = new FakeClient("""{"answers":{"tactic":{"type":"choice","choice":"suppress_push"},"focus":{"type":"choice","choice":"none"},"breach":{"type":"choice","choice":"B1"},"phase":{"type":"choice","choice":"breach"},"melee_push":{"type":"choice","choice":"go_now"},"ranged_role":{"type":"choice","choice":"cover_fire"}}}""");
+    Require((await new SquadPlanner(go).DecideAsync(wait)).Members["m1"].DestinationId != "hold", "go_now was ignored");
+    Require(go.LastQuestions!.ContainsKey("melee_push") && go.LastQuestions.ContainsKey("ranged_role"), "coordination questions not asked");
+
+    // covering fire: ranged shoot the defender nearest the melee, not the highest threat
+    var cover = await new SquadPlanner(coverFire).DecideAsync(Snap(0, Melee("m1", 120), Ranged("r1", 128)));
+    Require(cover.Members["r1"].TargetId == "c_near", "ranged did not cover the melee");
+
+    // ranged do not run ahead: with the melee still out, even follow_through keeps ranged on the support cell
+    var follow = new FakeClient("""{"answers":{"tactic":{"type":"choice","choice":"suppress_push"},"focus":{"type":"choice","choice":"none"},"breach":{"type":"choice","choice":"B1"},"phase":{"type":"choice","choice":"breach"},"melee_push":{"type":"choice","choice":"go_now"},"ranged_role":{"type":"choice","choice":"follow_through"}}}""");
+    var early = await new SquadPlanner(follow).DecideAsync(Snap(0, Melee("m1", 118), Ranged("r1", 128)));
+    Require(early.Members["r1"].DestinationId != "r1_p", "ranged moved up ahead of the melee");
+    // melee through: follow_through moves ranged up even with a target in sight; cover_fire keeps them shooting
+    var through = Snap(0, Melee("m1", 134), Ranged("r1", 128));
+    Require((await new SquadPlanner(follow).DecideAsync(through)).Members["r1"].DestinationId == "r1_p", "ranged did not follow the melee through");
+    Require((await new SquadPlanner(coverFire).DecideAsync(through)).Members["r1"].DestinationId != "r1_p", "cover_fire ranged left their post with a target in sight");
+    // offline fallback keeps the same timing rule
+    Require((await new SquadPlanner().DecideAsync(wait)).Members["m1"].DestinationId == "hold", "offline melee did not wait for ranged");
+});
+
 Console.WriteLine($"Tests: {passed} passed, {failed} failed");
 Environment.ExitCode = failed == 0 ? 0 : 1;
 

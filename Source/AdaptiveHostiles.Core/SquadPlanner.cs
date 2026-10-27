@@ -42,7 +42,8 @@ public sealed record SquadSnapshot(
 public sealed record SquadDecision(
     SquadTactic Tactic, string? FocusTargetId,
     IReadOnlyDictionary<string, OperativeDecision> Members, bool IsModelDecision,
-    string? BreachId = null, SquadPhase Phase = SquadPhase.Breach);
+    string? BreachId = null, SquadPhase Phase = SquadPhase.Breach,
+    RangedRole RangedRole = RangedRole.Cover, bool MeleeHold = false);
 
 /// <summary>
 /// One model call per squad per cycle. Jev sees every member's exact candidate cells and answers a
@@ -70,7 +71,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
     public const float PointBlank = 3f;
 
     public async Task<SquadDecision> DecideAsync(SquadSnapshot squad, CancellationToken cancellationToken = default) =>
-        CapTargets(RangedEngage(CoverHop(Sync(SquadCommitment.Apply(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad), squad), squad);
+        CapTargets(SquadCoordination.CoverFire(SquadCoordination.MeleeTiming(RangedEngage(CoverHop(Sync(SquadCommitment.Apply(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad), squad), squad), squad), squad);
 
     private async Task<SquadDecision> DecideCoreAsync(SquadSnapshot squad, CancellationToken cancellationToken)
     {
@@ -129,6 +130,31 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 }
             };
 
+        var coordination = SquadCoordination.Measure(squad, fallback.BreachId);
+        if (squad.Breaches.Count > 0 && coordination.HasBoth)
+        {
+            questions["melee_push"] = new
+            {
+                type = "choice",
+                instructions = "The melee raiders are about to close the last stretch to the opening under the colony's fire. Should they go now, or hold in their last cover until the ranged raiders are in position and firing? Use `coordination` to see where the ranged raiders are.",
+                criteria = new Dictionary<string, string>
+                {
+                    ["go_now"] = "Melee make the final dash now: the ranged raiders are already in place, or the defence is too weak to need cover.",
+                    ["hold_for_cover"] = "Melee wait in cover until the ranged raiders are at their support cells and shooting, so the defenders are busy when the melee run in."
+                }
+            };
+            questions["ranged_role"] = new
+            {
+                type = "choice",
+                instructions = "What should the ranged raiders do while the melee push into the opening? Use `coordination` to see how many melee are already through.",
+                criteria = new Dictionary<string, string>
+                {
+                    ["cover_fire"] = "Stay at the support cells beside the opening and keep shooting the defenders and turrets that cover it, so they cannot all turn on the melee.",
+                    ["follow_through"] = "Move up behind the melee and through the opening; only once the melee are already inside and fighting."
+                }
+            };
+        }
+
         for (var i = 0; i < members.Count; i++)
         {
             var m = members[i];
@@ -136,7 +162,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
             questions[$"move_{i}"] = new
             {
                 type = "choice",
-                instructions = $"Destination for member {i} ({role}). Coordinate with the others: melee members take the chosen breach point's breach_ cell and ranged members its support_ cell, so melee push in front while ranged back them up from behind on the same side. Every member MUST get a different destination, spread over different approaches, use cover, and match the squad plan. Only select a listed ID.",
+                instructions = $"Destination for member {i} ({role}). Coordinate with the others: melee members take the chosen breach point's breach_ cell and ranged members its support_ cell, so melee push in front while ranged cover them from the side. Ranged never run ahead of the melee. Every member MUST get a different destination, spread over different approaches, use cover, and match the squad plan. Only select a listed ID.",
                 criteria = MoveOptions(m.Moves)
             };
             var stances = new Dictionary<string, string>
@@ -161,12 +187,14 @@ public sealed class SquadPlanner(IJevClient? client = null)
             {
                 squad.Sent, squad.Down, squad.Retreated,
                 breachPoints = squad.Breaches,
+                coordination,
                 dangerZones = squad.DangerZones ?? Array.Empty<DangerZone>(),
                 members = members.Select((m, i) => new
                 {
                     index = i, isOperative = m.Member.IsOperative, isMelee = m.Member.IsMelee,
                     m.Member.Snapshot.X, m.Member.Snapshot.Z,
                     health = m.Member.Snapshot.HealthFraction, weapon = m.Member.Snapshot.EquippedWeapon,
+                    visibleTargets = m.Member.Snapshot.Targets.Count(t => t.Visible),
                     destinations = m.Moves.Values.ToArray()
                 }).ToArray(),
                 targets = targets.Values.ToArray()
@@ -197,6 +225,10 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 _ => SquadPhase.Breach
             };
             var focusId = focus == "none" ? null : focus;
+            var rangedRole = JevAnswers.Choice(root, "ranged_role") == "follow_through" ? RangedRole.Follow : RangedRole.Cover;
+            // No answer (no melee or no ranged raiders to coordinate) falls back to the local timing rule.
+            var holdAnswer = JevAnswers.Choice(root, "melee_push");
+            var hold = holdAnswer is null ? SquadCoordination.LocalHoldForCover(coordination) : holdAnswer == "hold_for_cover";
 
             var decisions = new Dictionary<string, OperativeDecision>(StringComparer.Ordinal);
             var taken = new HashSet<string>(StringComparer.Ordinal);
@@ -220,7 +252,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 if (!valid && chosen.DestinationId != "hold") taken.Add(chosen.DestinationId);
                 decisions[id] = chosen;
             }
-            return new SquadDecision(tactic, focusId, decisions, true, breachId, phase);
+            return new SquadDecision(tactic, focusId, decisions, true, breachId, phase, rangedRole, hold);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return fallback; }
         catch (HttpRequestException) { return fallback; }
@@ -265,6 +297,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
     private static SquadDecision RangedEngage(SquadDecision decision, SquadSnapshot squad)
     {
         var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        var state = SquadCoordination.Measure(squad, decision.BreachId);
         foreach (var m in squad.Members.Where(m => !m.IsMelee))
         {
             if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
@@ -280,7 +313,11 @@ public sealed class SquadPlanner(IJevClient? client = null)
             var support = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "support_" + id);
             var breach = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "breach_" + id);
             var press = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "press_" + id);
-            if (press is not null && !m.Snapshot.Targets.Any(t => t.Visible) && (Dist(m, press.X, press.Z) <= PressStick || (support is not null && Near(m, support)) || (breach is not null && Near(m, breach))))
+            if (press is null || !(Dist(m, press.X, press.Z) <= PressStick || (support is not null && Near(m, support)) || (breach is not null && Near(m, breach)))) continue;
+            // Ranged never move up ahead of the melee: the opening is taken once at least half the melee are through it.
+            // With "follow_through" they move up behind them even with a target in sight; otherwise only when nothing is in sight.
+            if (!state.MeleeIsThrough) continue;
+            if (decision.RangedRole == RangedRole.Follow || !m.Snapshot.Targets.Any(t => t.Visible))
                 members[m.Snapshot.PawnId] = d with { DestinationId = press.Id, Stance = TacticalStance.Aggressive };
         }
         return decision with { Members = members };
@@ -417,7 +454,8 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 slot: i, focus, canFlee: !m.Member.IsOperative, lossFraction: squad.LossFraction,
                 breachId: Effective(m.Member, breach), isMelee: m.Member.IsMelee, preferTurrets: !m.Member.IsMelee);
         }
-        return new SquadDecision(SquadTactic.FocusFire, focus, decisions, false, breach);
+        return new SquadDecision(SquadTactic.FocusFire, focus, decisions, false, breach,
+            MeleeHold: SquadCoordination.LocalHoldForCover(SquadCoordination.Measure(squad, breach)));
     }
 
     private static string? Effective(SquadMember m, string? mainBreachId) => m.GroupBreachId ?? mainBreachId;

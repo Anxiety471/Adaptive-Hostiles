@@ -35,8 +35,14 @@ public static class OperativeJobExecutor
         if (order.Kind == OrderKind.MoveTo)
         {
             var dest = new IntVec3(order.X, 0, order.Z);
+            // A melee raider that can reach an enemy goes for it; the ordered target may be far off or walled in.
+            if (IsMelee(pawn) && order.Stance != TacticalStance.Withdraw && !MeleeCanGo(pawn, target))
+                target = state.Target = NearestReachableEnemy(pawn);
             // Re-issuing the same order every cycle would restart the aim; let a walk or a shoot run on.
-            if (AlreadyCarryingOut(pawn, dest, state)) return;
+            // A raider that only waits at its cell while an enemy is now in reach attacks instead of idling there.
+            if (AlreadyCarryingOut(pawn, dest, state) && !(pawn.CurJob?.def == JobDefOf.Wait_Combat && order.Stance != TacticalStance.Withdraw &&
+                                                          target != null && (IsMelee(pawn) ? MeleeCanGo(pawn, target) : CanAttackFromHere(pawn, target))))
+                return;
             var go = JobMaker.MakeJob(JobDefOf.Goto, dest);
             go.locomotionUrgency = order.Stance == TacticalStance.Defensive || pawn.Position.DistanceTo(dest) < 15f
                 ? LocomotionUrgency.Jog : LocomotionUrgency.Sprint;
@@ -56,8 +62,7 @@ public static class OperativeJobExecutor
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, coverWall));
             // A melee raider only goes for a target it can actually reach and is close to: chasing a colonist behind a wall
             // or across the base pulled raiders off their cells and left them stuck against the wall.
-            if (target != null && order.Stance != TacticalStance.Withdraw &&
-                (!IsMelee(pawn) || (pawn.Position.DistanceTo(target.Position) <= 12f && pawn.CanReach(target, PathEndMode.Touch, Danger.Deadly))))
+            if (target != null && order.Stance != TacticalStance.Withdraw && (!IsMelee(pawn) || MeleeCanGo(pawn, target)))
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, target));
             // Never leave the queue empty: when it runs out vanilla assault AI would walk the raider elsewhere.
             pawn.jobs.jobQueue.EnqueueLast(MakeHold());
@@ -135,6 +140,12 @@ public static class OperativeJobExecutor
         var def = job.def;
         return def == JobDefOf.Wait_Combat || def == JobDefOf.AttackStatic || def == JobDefOf.AttackMelee;
     }
+
+    private static bool MeleeCanGo(Pawn pawn, Thing? target) =>
+        target != null && pawn.Position.DistanceTo(target.Position) <= 12f && pawn.CanReach(target, PathEndMode.Touch, Danger.Deadly);
+
+    private static Pawn? NearestReachableEnemy(Pawn pawn) =>
+        OperativeSampler.HostilePawns(pawn).FirstOrDefault(p => MeleeCanGo(pawn, p));
 
     private static bool IsMelee(Pawn pawn) => pawn.equipment?.Primary == null || pawn.equipment.Primary.def.IsMeleeWeapon;
 

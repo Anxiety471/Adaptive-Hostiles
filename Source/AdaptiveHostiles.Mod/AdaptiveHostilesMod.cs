@@ -14,11 +14,17 @@ public sealed class AdaptiveHostilesMod : Verse.Mod
 
     /// <summary>Player-entered provider settings; read once when the decision client is created.</summary>
     public static ProviderSettings Providers { get; private set; } = new();
+    /// <summary>Game ticks between squad decisions, from the mod settings page.</summary>
+    public static int SquadIntervalTicks { get; private set; } = 60;
+    /// <summary>Whether Jev reads a picture of the base (Jev provider only); the settings page is the off switch.</summary>
+    public static bool BaseImagesEnabled { get; private set; } = true;
 
     public AdaptiveHostilesMod(ModContentPack content) : base(content)
     {
         _data = GetSettings<ModSettingsData>();
         Providers = _data.ToProviderSettings();
+        SquadIntervalTicks = _data.SquadInterval;
+        BaseImagesEnabled = _data.BaseImages;
         new Harmony("anxiety471.adaptivehostiles").PatchAll();
         Log.Message("[Adaptive Hostiles] Pre-alpha loaded; hostile raid composition hook is active.");
     }
@@ -29,5 +35,6 @@ public sealed class AdaptiveHostilesMod : Verse.Mod
     {
         SettingsWindow.Draw(inRect, _data);
         Providers = _data.ToProviderSettings();
+        BaseImagesEnabled = _data.BaseImages;
     }
 }

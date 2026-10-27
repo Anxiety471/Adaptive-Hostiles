@@ -39,9 +39,9 @@ public sealed class AdaptiveHostilesComponent : GameComponent
         }
     }
 
-    public override void LoadedGame() { JevPlanService.Reset(); Tactics.OperativeDriver.Reset(); Tactics.SquadDriver.Reset(); }
+    public override void LoadedGame() { JevPlanService.Reset(); BaseVisionService.Reset(); Tactics.OperativeDriver.Reset(); Tactics.SquadDriver.Reset(); }
 
-    public override void StartedNewGame() { JevPlanService.Reset(); Tactics.OperativeDriver.Reset(); Tactics.SquadDriver.Reset(); }
+    public override void StartedNewGame() { JevPlanService.Reset(); BaseVisionService.Reset(); Tactics.OperativeDriver.Reset(); Tactics.SquadDriver.Reset(); }
 
     public override void ExposeData()
     {

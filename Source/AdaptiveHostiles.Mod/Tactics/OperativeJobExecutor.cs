@@ -12,7 +12,8 @@ namespace AdaptiveHostiles.Mod.Tactics;
 /// </summary>
 public static class OperativeJobExecutor
 {
-    public static void Apply(Pawn pawn, OperativeOrder order, OperativeRuntimeState state)
+    /// <param name="pinnedWall">The wall or door of the breach point the order targets, if it still stands.</param>
+    public static void Apply(Pawn pawn, OperativeOrder order, OperativeRuntimeState state, Thing? pinnedWall = null)
     {
         if (!pawn.Spawned || pawn.Dead || pawn.Downed) return;
 
@@ -34,8 +35,16 @@ public static class OperativeJobExecutor
         if (order.Kind == OrderKind.MoveTo)
         {
             var dest = new IntVec3(order.X, 0, order.Z);
+            // Like a drafted colonist: anything in weapon range is attacked where the raider stands, the order's cell comes after.
+            if (order.Stance != TacticalStance.Withdraw && EngageInRange(pawn, target, state)) return;
+            // A melee raider that can reach an enemy goes for it; the ordered target may be far off or walled in.
+            if (IsMelee(pawn) && order.Stance != TacticalStance.Withdraw && !MeleeCanGo(pawn, target))
+                target = state.Target = NearestReachableEnemy(pawn);
             // Re-issuing the same order every cycle would restart the aim; let a walk or a shoot run on.
-            if (AlreadyCarryingOut(pawn, dest, state)) return;
+            // A raider that only waits at its cell while an enemy is now in reach attacks instead of idling there.
+            if (AlreadyCarryingOut(pawn, dest, state) && !(pawn.CurJob?.def == JobDefOf.Wait_Combat && order.Stance != TacticalStance.Withdraw &&
+                                                          target != null && (IsMelee(pawn) ? MeleeCanGo(pawn, target) : CanAttackFromHere(pawn, target))))
+                return;
             var go = JobMaker.MakeJob(JobDefOf.Goto, dest);
             go.locomotionUrgency = order.Stance == TacticalStance.Defensive || pawn.Position.DistanceTo(dest) < 15f
                 ? LocomotionUrgency.Jog : LocomotionUrgency.Sprint;
@@ -43,14 +52,19 @@ public static class OperativeJobExecutor
             Start(pawn, go, state);
             state.Destination = dest;
             // A raider pushing a breach point of a sealed base has to break the wall or door in its way.
+            // The raid's pinned breach wall comes first; once it is down, the next wall on the path takes over.
             if (order.Reason.StartsWith("breach_", StringComparison.Ordinal) && order.Stance != TacticalStance.Withdraw &&
-                WallBreaker.TryFindBlocker(pawn, out var wall))
-                pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, wall));
-            // Ranged raiders backing a breach shoot the wall too instead of idling behind it.
-            else if (order.Reason.StartsWith("support_", StringComparison.Ordinal) && target == null &&
-                     order.Stance != TacticalStance.Withdraw && !IsMelee(pawn) && WallBreaker.TryFindBlocker(pawn, out var cover))
-                pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, cover));
-            if (target != null && order.Stance != TacticalStance.Withdraw)
+                (pinnedWall ?? (WallBreaker.TryFindBlocker(pawn, out var wall) ? wall : null)) is { } breachWall)
+                pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, breachWall));
+            // Ranged raiders backing a breach shoot the wall too instead of idling behind it, unless they can see their target.
+            else if (order.Reason.StartsWith("support_", StringComparison.Ordinal) &&
+                     !(target != null && GenSight.LineOfSight(dest, target.Position, pawn.Map)) &&
+                     order.Stance != TacticalStance.Withdraw && !IsMelee(pawn) &&
+                     (pinnedWall ?? (WallBreaker.TryFindBlocker(pawn, out var cover) ? cover : null)) is { } coverWall)
+                pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, coverWall));
+            // A melee raider only goes for a target it can actually reach and is close to: chasing a colonist behind a wall
+            // or across the base pulled raiders off their cells and left them stuck against the wall.
+            if (target != null && order.Stance != TacticalStance.Withdraw && (!IsMelee(pawn) || MeleeCanGo(pawn, target)))
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, target));
             // Never leave the queue empty: when it runs out vanilla assault AI would walk the raider elsewhere.
             pawn.jobs.jobQueue.EnqueueLast(MakeHold());
@@ -112,6 +126,8 @@ public static class OperativeJobExecutor
     private static Job MakeAttack(Pawn pawn, Thing target)
     {
         var melee = IsMelee(pawn);
+        if (target is Building b && b.def.category == ThingCategory.Building)
+            Log.Message($"[Adaptive Hostiles] {pawn.LabelShort} attacks {b.LabelShort} at ({b.Position.x},{b.Position.z}).");
         var job = JobMaker.MakeJob(melee ? JobDefOf.AttackMelee : JobDefOf.AttackStatic, target);
         job.expiryInterval = 600;
         return job;
@@ -126,6 +142,42 @@ public static class OperativeJobExecutor
         var def = job.def;
         return def == JobDefOf.Wait_Combat || def == JobDefOf.AttackStatic || def == JobDefOf.AttackMelee;
     }
+
+    private const float MeleeEngage = 5f;
+
+    /// <summary>
+    /// Draft-mode behaviour: a ranged raider shoots the ordered target, else the nearest enemy it can hit from where it stands;
+    /// a melee raider fights the nearest reachable enemy within a few cells. The attack runs on across cycles and the raider
+    /// resumes its order once nothing is left in range. Returns true when an attack is running.
+    /// </summary>
+    private static bool EngageInRange(Pawn pawn, Thing? ordered, OperativeRuntimeState state)
+    {
+        Thing? pick = null;
+        if (IsMelee(pawn))
+            pick = OperativeSampler.HostilePawns(pawn).FirstOrDefault(p =>
+                pawn.Position.DistanceTo(p.Position) <= MeleeEngage && pawn.CanReach(p, PathEndMode.Touch, Danger.Deadly));
+        else if (ordered != null && CanAttackFromHere(pawn, ordered)) pick = ordered;
+        else
+        {
+            pick = OperativeSampler.HostilePawns(pawn).Take(6).FirstOrDefault(p => CanAttackFromHere(pawn, p)) as Thing
+                   ?? OperativeSampler.HostileTurrets(pawn).Take(4).FirstOrDefault(t => CanAttackFromHere(pawn, t));
+        }
+        if (pick is null) return false;
+
+        var cur = pawn.CurJob;
+        if (cur != null && (cur.def == JobDefOf.AttackStatic || cur.def == JobDefOf.AttackMelee) && cur.targetA.Thing == pick) return true;
+        state.Target = pick;
+        state.Destination = null;
+        Start(pawn, MakeAttack(pawn, pick), state);
+        pawn.jobs.jobQueue.EnqueueLast(MakeHold());
+        return true;
+    }
+
+    private static bool MeleeCanGo(Pawn pawn, Thing? target) =>
+        target != null && pawn.Position.DistanceTo(target.Position) <= 12f && pawn.CanReach(target, PathEndMode.Touch, Danger.Deadly);
+
+    private static Pawn? NearestReachableEnemy(Pawn pawn) =>
+        OperativeSampler.HostilePawns(pawn).FirstOrDefault(p => MeleeCanGo(pawn, p));
 
     private static bool IsMelee(Pawn pawn) => pawn.equipment?.Primary == null || pawn.equipment.Primary.def.IsMeleeWeapon;
 

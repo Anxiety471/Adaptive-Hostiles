@@ -13,9 +13,9 @@ public static class BreachFinder
 {
     public const int MaxPoints = 3;
     private const float StageDistance = 16f;
-    private const float MaxDefenderDistance = 20f;
     private const float DefenderSightRange = 25f;
-    private static readonly int[] Radii = { 6, 10, 14, 18 };
+    private const int MaxPathTargets = 5;
+    private const int MinSpacing = 8;
 
     public static IntVec3 DefenderCentre(IReadOnlyList<Pawn> defenders, IReadOnlyList<Building_Turret> turrets)
     {
@@ -24,38 +24,62 @@ public static class BreachFinder
         return new IntVec3((int)cells.Average(c => c.x), 0, (int)cells.Average(c => c.z));
     }
 
+    /// <summary>
+    /// One candidate per defender or turret the reference raider can path to: the stand cell and the first wall or door
+    /// on that shortest path (the same route vanilla sappers dig along). Open bases have no wall, so the candidate is a
+    /// cell a few steps short of the target.
+    /// </summary>
     public static List<BreachPoint> Find(
         Pawn reference, RimWorldTacticalMap map, IReadOnlyList<Pawn> defenders,
-        IReadOnlyList<Building_Turret> turrets, IntVec3 centre)
+        IReadOnlyList<Building_Turret> turrets, IntVec3 centre, DangerMemory danger, long now, IntVec3? visionWall = null)
     {
-        var scored = new List<(BreachPoint Point, float Dist)>();
-        if (!centre.IsValid) return new List<BreachPoint>();
-        for (var ri = 0; ri < Radii.Length; ri++)
-        for (var deg = 0; deg < 360; deg += 30)
+        var candidates = new List<BreachPoint>();
+        if (!centre.IsValid) return candidates;
+        var targets = defenders.Cast<Thing>().Take(MaxPathTargets).Concat(turrets.Take(MaxPathTargets));
+        foreach (var target in targets)
         {
-            var rad = deg * Math.PI / 180.0;
-            int x = centre.x + (int)Math.Round(Radii[ri] * Math.Cos(rad));
-            int z = centre.z + (int)Math.Round(Radii[ri] * Math.Sin(rad));
-            if (!map.IsStandable(x, z) || !map.IsReachable(x, z)) continue;
-            var cell = new IntVec3(x, 0, z);
-            if (!defenders.Any(d => d.Position.DistanceTo(cell) <= MaxDefenderDistance) &&
-                !turrets.Any(t => t.Position.DistanceTo(cell) <= MaxDefenderDistance)) continue;
+            var cells = WallBreaker.PathCells(reference, target);
+            var nodes = cells.Select(c => (c.x, c.z)).ToList();
+            Log.Message($"[Adaptive Hostiles] breach path to {target.LabelShort} at ({target.Position.x},{target.Position.z}): " +
+                        $"{nodes.Count} cells" + (nodes.Count > 0 ? $" from ({nodes[0].x},{nodes[0].z}) to ({nodes[^1].x},{nodes[^1].z})" : ""));
+            var site = BreachRoute.Resolve(
+                nodes,
+                (x, z) => WallBreaker.BlockerAt(reference, new IntVec3(x, 0, z)) is not null,
+                (x, z) => map.IsStandable(x, z) && map.IsReachable(x, z));
+            if (site is not { } s) continue;
 
+            var cell = new IntVec3(s.StandX, 0, s.StandZ);
             var sees = defenders.Count(d => d.Position.DistanceTo(cell) <= DefenderSightRange &&
                                             GenSight.LineOfSight(d.Position, cell, reference.Map));
             var covered = turrets.Count(t => cell.DistanceTo(t.Position) <= OperativeSampler.TurretRange(t) + 1f);
-            var weakness = 1f / (1 + sees + 2 * covered);
-            scored.Add((new BreachPoint("", x, z, weakness, sees, covered), cell.DistanceTo(reference.Position)));
+            var fell = danger.Penalty(s.StandX, s.StandZ, now);
+            var weakness = BreachRoute.Weakness(sees, covered, fell);
+            candidates.Add(new BreachPoint("", s.StandX, s.StandZ, weakness, sees, covered, s.WallX, s.WallZ, fell));
         }
-
-        var picked = new List<BreachPoint>();
-        foreach (var (point, _) in scored.OrderByDescending(s => s.Point.Weakness).ThenBy(s => s.Point.X).ThenBy(s => s.Point.Z))
+        if (visionWall is { } hinted && VisionCandidate(reference, map, hinted) is { } extra)
         {
-            if (picked.Any(p => Math.Abs(p.X - point.X) + Math.Abs(p.Z - point.Z) < 8)) continue;
-            picked.Add(point with { Id = $"B{picked.Count + 1}" });
-            if (picked.Count >= MaxPoints) break;
+            var cell = new IntVec3(extra.StandX, 0, extra.StandZ);
+            var sees = defenders.Count(d => d.Position.DistanceTo(cell) <= DefenderSightRange &&
+                                            GenSight.LineOfSight(d.Position, cell, reference.Map));
+            var covered = turrets.Count(t => cell.DistanceTo(t.Position) <= OperativeSampler.TurretRange(t) + 1f);
+            var fell = danger.Penalty(extra.StandX, extra.StandZ, now);
+            candidates.Add(new BreachPoint("", extra.StandX, extra.StandZ, BreachRoute.Weakness(sees, covered, fell), sees, covered,
+                extra.WallX, extra.WallZ, fell));
+            Log.Message($"[Adaptive Hostiles] Jev image candidate: wall ({extra.WallX},{extra.WallZ}), stand ({extra.StandX},{extra.StandZ}).");
         }
-        return picked;
+        return BreachRoute.Pick(candidates, MaxPoints, MinSpacing);
+    }
+
+    // The wall or door nearest the cell Jev pointed at, with the raiders' side stand cell next to it; null when none is within reach.
+    private static BreachSite? VisionCandidate(Pawn reference, RimWorldTacticalMap map, IntVec3 hint)
+    {
+        var found = GenRadial.RadialCellsAround(hint, 4f, true).Where(c => c.InBounds(reference.Map))
+            .Cast<IntVec3?>().FirstOrDefault(c => WallBreaker.BlockerAt(reference, c!.Value) is not null);
+        if (found is not { } wall) return null;
+        var stand = GenAdj.CellsAdjacent8Way(new TargetInfo(wall, reference.Map))
+            .Where(c => map.IsStandable(c.x, c.z) && map.IsReachable(c.x, c.z))
+            .OrderBy(c => c.DistanceToSquared(reference.Position)).Cast<IntVec3?>().FirstOrDefault();
+        return stand is { } s ? new BreachSite(s.x, s.z, wall.x, wall.z) : null;
     }
 
     /// <summary>
@@ -69,31 +93,89 @@ public static class BreachFinder
         var result = new List<MovementCandidate>();
         foreach (var bp in points)
         {
+            // Outward direction: from the wall (or, in an open base, the defenders) through the breach cell.
+            var fromX = bp.WallX >= 0 ? bp.WallX : centre.x;
+            var fromZ = bp.WallX >= 0 ? bp.WallZ : centre.z;
             var anchorX = bp.X;
             var anchorZ = bp.Z;
+            // Role cells stay on the raiders' side of the breach wall; a cell inside the base would send them around it.
+            var wallSide = bp.WallX >= 0 ? (Func<int, int, bool>)((x, z) => BreachRoute.OutsideWall(bp.WallX, bp.WallZ, bp.X, bp.Z, x, z)) : null;
             if (!isMelee)
             {
-                // Behind the melee push: continue the defenders-to-breach line outward.
-                var dx = bp.X - centre.x;
-                var dz = bp.Z - centre.z;
-                var len = Math.Max(1f, (float)Math.Sqrt(dx * dx + dz * dz));
-                var back = Math.Clamp(range * 0.5f, 4f, 12f);
-                anchorX = bp.X + (int)Math.Round(dx / len * back);
-                anchorZ = bp.Z + (int)Math.Round(dz / len * back);
+                // Beside the opening, hugging the wall, rather than straight behind it in the defenders' line of fire.
+                (anchorX, anchorZ) = BreachRoute.SupportAnchor(bp.X, bp.Z, fromX, fromZ, range, slot, bp.WallX >= 0);
             }
 
-            Add(result, pawn, map, FindCell(map, anchorX, anchorZ, slot, used), (isMelee ? "breach_" : "support_") + bp.Id, used);
+            var role = isMelee ? FindCell(map, anchorX, anchorZ, slot, used, wallSide) : FindCover(map, anchorX, anchorZ, slot, used, wallSide);
+            Add(result, pawn, map, role, (isMelee ? "breach_" : "support_") + bp.Id, used);
+            // A long way from the role cell: the next stop is a covered cell part of the way there, not one run across open ground.
+            if (role is { } rc)
+            {
+                var hx = rc.Item1 - pawn.Position.x;
+                var hz = rc.Item2 - pawn.Position.z;
+                var hlen = (float)Math.Sqrt(hx * hx + hz * hz);
+                // Far out the first stop is the edge of the exposed zone (25 cells from the role cell), so the walk in is not slowed.
+                var step = hlen > BreachRoute.HopFar + BreachRoute.HopStep ? hlen - BreachRoute.HopFar : BreachRoute.HopStep;
+                if (hlen > BreachRoute.HopTrigger)
+                    Add(result, pawn, map, Pinned(pawn, map, "hop_" + bp.Id, () => FindCover(map, pawn.Position.x + (int)Math.Round(hx / hlen * step),
+                        pawn.Position.z + (int)Math.Round(hz / hlen * step), slot, used, null)), "hop_" + bp.Id, used);
+            }
+            // An open breach has no wall to break: melee also get a press cell past the opening toward the defenders, one per raider.
+            // The press cell is measured from the raider itself once it is through, so the push keeps going each cycle until
+            // the raiders stand on the defenders instead of idling a few cells past the opening. Ranged stop short of them.
+            if (bp.WallX < 0 && centre.IsValid)
+            {
+                var pdx = centre.x - pawn.Position.x;
+                var pdz = centre.z - pawn.Position.z;
+                var bdx = centre.x - bp.X;
+                var bdz = centre.z - bp.Z;
+                var through = pdx * pdx + pdz * pdz < bdx * bdx + bdz * bdz;
+                var ox = through ? pawn.Position.x : bp.X;
+                var oz = through ? pawn.Position.z : bp.Z;
+                var px = centre.x - ox;
+                var pz = centre.z - oz;
+                var plen = Math.Max(1f, (float)Math.Sqrt(px * px + pz * pz));
+                var stop = isMelee ? 2f : 7f;
+                var ahead = Math.Min((through ? 8f : 3f) + slot, Math.Max(2f, plen - stop));
+                // Straight toward the defenders can land inside a sealed room the raider cannot reach; then the press cell is the
+                // reachable cell nearest the defenders, so the raider still has somewhere to press to instead of idling at the breach.
+                Add(result, pawn, map, Pinned(pawn, map, "press_" + bp.Id, () =>
+                        FindCell(map, ox + (int)Math.Round(px / plen * ahead), oz + (int)Math.Round(pz / plen * ahead), slot, used, null) ??
+                        FindCell(map, centre.x, centre.z, slot, used, null, maxRing: 16)),
+                    "press_" + bp.Id, used);
+            }
+            // A stalled assault sends ranged raiders to open a wall too, so they are offered the breach cell as well.
+            if (!isMelee)
+                Add(result, pawn, map, FindCell(map, bp.X, bp.Z, slot, used, wallSide), "breach_" + bp.Id, used);
 
             // Staging cell: further out on the raiders' side, where the squad gathers until the go signal.
-            var sx = bp.X - centre.x;
-            var sz = bp.Z - centre.z;
+            var sx = bp.X - fromX;
+            var sz = bp.Z - fromZ;
             var slen = Math.Max(1f, (float)Math.Sqrt(sx * sx + sz * sz));
             Add(result, pawn, map,
-                FindCell(map, bp.X + (int)Math.Round(sx / slen * StageDistance), bp.Z + (int)Math.Round(sz / slen * StageDistance), slot, used),
+                FindCover(map, bp.X + (int)Math.Round(sx / slen * StageDistance), bp.Z + (int)Math.Round(sz / slen * StageDistance), slot, used, wallSide),
                 "stage_" + bp.Id, used);
         }
         return result;
     }
+
+    // Hop and press cells stay pinned to a raider until it gets there, so a one-second cadence does not make them drift each cycle.
+    private static readonly Dictionary<string, (int X, int Z, int Tick)> Pins = new();
+    private const int PinTicks = 600;
+
+    private static (int, int)? Pinned(Pawn pawn, RimWorldTacticalMap map, string purpose, Func<(int, int)?> pick)
+    {
+        var key = pawn.ThingID + purpose;
+        var now = Verse.Find.TickManager.TicksGame;
+        if (Pins.TryGetValue(key, out var pin) && now - pin.Tick < PinTicks && map.IsStandable(pin.X, pin.Z) &&
+            new IntVec3(pin.X, 0, pin.Z).DistanceTo(pawn.Position) > 2.5f)
+            return (pin.X, pin.Z);
+        var cell = pick();
+        if (cell is { } c) Pins[key] = (c.Item1, c.Item2, now); else Pins.Remove(key);
+        return cell;
+    }
+
+    public static void ResetPins() => Pins.Clear();
 
     private static void Add(
         List<MovementCandidate> result, Pawn pawn, RimWorldTacticalMap map, (int, int)? cell, string purpose,
@@ -107,10 +189,32 @@ public static class BreachFinder
             (float)new IntVec3(x, 0, z).DistanceTo(pawn.Position), purpose, true, map.InTurretRange(x, z)));
     }
 
-    // Nearest free standable, reachable cell around the anchor; slot rotates the search so members spread.
-    private static (int, int)? FindCell(RimWorldTacticalMap map, int ax, int az, int slot, HashSet<(int, int)> used)
+    // The best free cell within 3 of the anchor by BreachRoute.CellScore: out of the defenders' sight, hugging a wall or corner.
+    private static (int, int)? FindCover(
+        RimWorldTacticalMap map, int ax, int az, int slot, HashSet<(int, int)> used, Func<int, int, bool>? allowed)
     {
-        for (var r = 0; r <= 4; r++)
+        (int, int)? best = null;
+        var bestScore = float.MaxValue;
+        for (var r = 0; r <= 3; r++)
+        for (var dx = -r; dx <= r; dx++)
+        for (var dz = -r; dz <= r; dz++)
+        {
+            if (Math.Max(Math.Abs(dx), Math.Abs(dz)) != r) continue;
+            int x = ax + dx, z = az + dz;
+            if (used.Contains((x, z)) || (allowed is not null && !allowed(x, z)) || !map.IsStandable(x, z) || !map.IsReachable(x, z)) continue;
+            var score = BreachRoute.CellScore(map.ExposureAt(x, z), map.HugsWall(x, z), r);
+            if (score >= bestScore) continue;
+            best = (x, z);
+            bestScore = score;
+        }
+        return best ?? FindCell(map, ax, az, slot, used, allowed);
+    }
+
+    // Nearest free standable, reachable cell around the anchor; slot rotates the search so members spread.
+    private static (int, int)? FindCell(
+        RimWorldTacticalMap map, int ax, int az, int slot, HashSet<(int, int)> used, Func<int, int, bool>? allowed = null, int maxRing = 4)
+    {
+        for (var r = 0; r <= maxRing; r++)
         {
             var ring = new List<(int, int)>();
             for (var dx = -r; dx <= r; dx++)
@@ -119,7 +223,7 @@ public static class BreachFinder
             for (var i = 0; i < ring.Count; i++)
             {
                 var c = ring[(i + slot) % ring.Count];
-                if (used.Contains(c) || !map.IsStandable(c.Item1, c.Item2) || !map.IsReachable(c.Item1, c.Item2)) continue;
+                if (used.Contains(c) || (allowed is not null && !allowed(c.Item1, c.Item2)) || !map.IsStandable(c.Item1, c.Item2) || !map.IsReachable(c.Item1, c.Item2)) continue;
                 return c;
             }
         }

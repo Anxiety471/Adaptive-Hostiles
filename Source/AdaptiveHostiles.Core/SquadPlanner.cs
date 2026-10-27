@@ -9,18 +9,21 @@ public enum SquadTactic { FocusFire, Flank, SuppressAndPush, Regroup }
 public enum SquadPhase { Gather, Breach, Press }
 
 /// <summary>One controllable raider as sampled on the game thread; the Operative is flagged.</summary>
-public sealed record SquadMember(OperativeSnapshot Snapshot, bool IsOperative, bool IsMelee = false);
+public sealed record SquadMember(
+    OperativeSnapshot Snapshot, bool IsOperative, bool IsMelee = false, string? GroupBreachId = null);
 
 /// <summary>
 /// A place the colony is weakly defended, scored locally so Jev picks where to break through
 /// instead of walking into the open kill zone. Weakness is 0..1, higher is easier to break.
 /// </summary>
-public sealed record BreachPoint(string Id, int X, int Z, float Weakness, int Defenders, int Turrets);
+public sealed record BreachPoint(
+    string Id, int X, int Z, float Weakness, int Defenders, int Turrets, int WallX = -1, int WallZ = -1, float Danger = 0f);
 
 public sealed record SquadSnapshot(
     string SquadId, IReadOnlyList<SquadMember> Members, int Sent, int Down, int Retreated,
     IReadOnlyList<BreachPoint>? BreachPoints = null,
-    SquadPhase PreviousPhase = SquadPhase.Gather, int GatherCycles = 0, int BreachCycles = 0)
+    SquadPhase PreviousPhase = SquadPhase.Gather, int GatherCycles = 0, int BreachCycles = 0,
+    IReadOnlyList<DangerZone>? DangerZones = null, double DamageDealt = 0, int Defenders = 0)
 {
     public IReadOnlyList<BreachPoint> Breaches => BreachPoints ?? Array.Empty<BreachPoint>();
 
@@ -48,21 +51,26 @@ public sealed record SquadDecision(
 /// </summary>
 public sealed class SquadPlanner(IJevClient? client = null)
 {
-    public const int MaxMembers = 12;
+    public const int MaxMembers = 24;
     public const int MaxDestinationsPerMember = 12;
     public const int MaxTargets = 16;
 
     /// <summary>Raiders count as gathered when this fraction stands at their staging cell.</summary>
-    public const double ReadyFraction = 0.75;
+    public const double ReadyFraction = 1.0;
     public const float StagedWithin = 4f;
     /// <summary>After this many gather cycles the squad goes anyway, so a blocked member cannot stall the raid.</summary>
-    public const int MaxGatherCycles = 4;
-    /// <summary>Ranged raiders wait for the melee push to reach the breach, at most this many cycles.</summary>
-    public const int MaxMeleeLeadCycles = 4;
-    public const float AtBreachWithin = 5f;
+    public const int MaxGatherCycles = 50; // seconds of game time since the first gather order (3000 ticks)
+    /// <summary>A melee raider this close to its breach cell (or its press cell) is sent on through the opening.</summary>
+    public const float PressWithin = 3f;
+    /// <summary>A raider already this close to its press cell is through the opening and keeps pressing, never walking back to the breach cell.</summary>
+    public const float PressStick = 9f;
+    /// <summary>No more raiders than this are ordered onto one target; the rest take their next best.</summary>
+    public const int MaxPerTarget = 3;
+    /// <summary>A ranged raider with a visible enemy this close shoots from where it stands instead of repositioning.</summary>
+    public const float PointBlank = 3f;
 
     public async Task<SquadDecision> DecideAsync(SquadSnapshot squad, CancellationToken cancellationToken = default) =>
-        Sync(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad);
+        CapTargets(RangedEngage(CoverHop(Sync(SquadCommitment.Apply(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad), squad), squad);
 
     private async Task<SquadDecision> DecideCoreAsync(SquadSnapshot squad, CancellationToken cancellationToken)
     {
@@ -97,7 +105,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
             ["focus"] = new
             {
                 type = "choice",
-                instructions = "Choose the one visible colonist the squad should focus fire on, or none.",
+                instructions = "Choose the one visible target the squad should focus fire on, or none. When turrets cover the breach, focus a turret: ranged raiders will shoot turrets from outside their range while melee push in, which lowers the colony's fire and makes room for melee. Otherwise choose a colonist. A non-colony enemy that attacks the raid should be engaged early: ranged shoot it before it closes in and melee meet it.",
                 criteria = TargetOptions(targets)
             }
         };
@@ -153,6 +161,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
             {
                 squad.Sent, squad.Down, squad.Retreated,
                 breachPoints = squad.Breaches,
+                dangerZones = squad.DangerZones ?? Array.Empty<DangerZone>(),
                 members = members.Select((m, i) => new
                 {
                     index = i, isOperative = m.Member.IsOperative, isMelee = m.Member.IsMelee,
@@ -200,11 +209,13 @@ public sealed class SquadPlanner(IJevClient? client = null)
                     ParseStance(JevAnswers.Choice(root, $"stance_{i}"), m.Member.IsOperative),
                     m.Member.Snapshot.HealthFraction, squad.LossFraction);
                 var role = move is not null && m.Moves.TryGetValue(move, out var picked) ? picked.Purpose : "";
-                var valid = move is not null && stance is not null && RoleAllows(m.Member.IsMelee, role, breachId) &&
+                var retreating = stance is TacticalStance.Withdraw or TacticalStance.Flee;
+                var valid = move is not null && stance is not null && RoleAllows(m.Member.IsMelee, role, Effective(m.Member, breachId)) &&
+                            !(retreating && (role.StartsWith("breach_", StringComparison.Ordinal) || role.StartsWith("support_", StringComparison.Ordinal) || role.StartsWith("press_", StringComparison.Ordinal))) &&
                             (move == "hold" || (m.Moves.ContainsKey(move) && !taken.Contains(move)));
                 if (valid && move != "hold") taken.Add(move!);
                 var chosen = valid
-                    ? new OperativeDecision(move!, TacticalHeuristics.PickTarget(m.Member.Snapshot.Targets, focusId), stance!.Value, true)
+                    ? new OperativeDecision(move!, TacticalHeuristics.PickTarget(m.Member.Snapshot.Targets, focusId, preferTurrets: !m.Member.IsMelee), stance!.Value, true)
                     : fallback.Members[id];
                 if (!valid && chosen.DestinationId != "hold") taken.Add(chosen.DestinationId);
                 decisions[id] = chosen;
@@ -226,35 +237,87 @@ public sealed class SquadPlanner(IJevClient? client = null)
     };
 
     /// <summary>
-    /// Melee first, ranged backup: after the go signal ranged raiders stay at their staging cell until
-    /// enough melee stand at the breach (or none are left, or the melee lead timed out).
+    /// Melee that reached an open breach do not stand at it: they go on to their own press cell past the opening, toward the
+    /// defenders, so they stream through one after another instead of clogging a narrow gap. A raider already at its press
+    /// cell stays on it, so the order does not flip back to the breach cell.
     /// </summary>
-    private static SquadDecision HoldRangedBehindMelee(SquadDecision decision, SquadSnapshot squad, string breachId)
+    private static SquadDecision PressThrough(SquadDecision decision, SquadSnapshot squad, string breachId)
     {
-        var melee = squad.Members.Where(m => m.IsMelee).ToList();
-        if (melee.Count == 0 || squad.BreachCycles >= MaxMeleeLeadCycles) return decision;
-        var atBreach = melee.Count(m =>
+        var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        foreach (var m in squad.Members.Where(m => m.IsMelee))
         {
-            var cell = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "breach_" + breachId);
-            if (cell is null) return true;
-            var dx = m.Snapshot.X - cell.X;
-            var dz = m.Snapshot.Z - cell.Z;
-            return Math.Sqrt(dx * dx + dz * dz) <= AtBreachWithin;
-        });
-        if (atBreach >= Math.Ceiling(melee.Count / 2.0)) return decision;
-
-        var held = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
-        foreach (var m in squad.Members.Where(m => !m.IsMelee))
-        {
-            var stage = StageCell(m, breachId);
-            if (stage is null || !held.TryGetValue(m.Snapshot.PawnId, out var d)) continue;
-            if (d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
-            held[m.Snapshot.PawnId] = d with { DestinationId = stage.Id, Stance = TacticalStance.Aggressive };
+            var id = Effective(m, breachId);
+            if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+            var press = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "press_" + id);
+            var breach = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "breach_" + id);
+            if (press is null) continue;
+            if (Dist(m, press.X, press.Z) <= PressStick || (breach is not null && Near(m, breach)))
+                members[m.Snapshot.PawnId] = d with { DestinationId = press.Id, Stance = TacticalStance.Aggressive };
         }
-        return decision with { Members = held };
+        return decision with { Members = members };
     }
 
-    private static MovementCandidate? StageCell(SquadMember m, string breachId) =>
+    /// <summary>
+    /// Ranged raiders do not kite or hold a firing distance: an enemy within <see cref="PointBlank"/> cells is shot where the raider
+    /// stands. Once the squad has gone, a ranged raider that reached its support cell at an open breach with no one in sight moves
+    /// up to the opening instead of idling outside.
+    /// </summary>
+    private static SquadDecision RangedEngage(SquadDecision decision, SquadSnapshot squad)
+    {
+        var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        foreach (var m in squad.Members.Where(m => !m.IsMelee))
+        {
+            if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+            var close = m.Snapshot.Targets.Where(t => t.Visible && Dist(m, t.X, t.Z) <= PointBlank)
+                .OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).FirstOrDefault();
+            if (close is not null)
+            {
+                members[m.Snapshot.PawnId] = d with { DestinationId = "hold", TargetId = close.Id, Stance = TacticalStance.Aggressive };
+                continue;
+            }
+            var id = Effective(m, decision.BreachId);
+            if (decision.Phase == SquadPhase.Gather || decision.BreachId is null || squad.Breaches.FirstOrDefault(b => b.Id == id) is not { WallX: < 0 }) continue;
+            var support = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "support_" + id);
+            var breach = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "breach_" + id);
+            var press = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "press_" + id);
+            if (press is not null && !m.Snapshot.Targets.Any(t => t.Visible) && (Dist(m, press.X, press.Z) <= PressStick || (support is not null && Near(m, support)) || (breach is not null && Near(m, breach))))
+                members[m.Snapshot.PawnId] = d with { DestinationId = press.Id, Stance = TacticalStance.Aggressive };
+        }
+        return decision with { Members = members };
+    }
+
+    /// <summary>
+    /// Raiders far from their role cell advance cover to cover: the order goes to their hop cell (a covered cell on the way),
+    /// and the next cycle moves them on, so the whole squad crosses open ground in short waves instead of one run.
+    /// </summary>
+    private static SquadDecision CoverHop(SquadDecision decision, SquadSnapshot squad)
+    {
+        if (decision.Phase == SquadPhase.Gather || decision.BreachId is null) return decision;
+        var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        foreach (var m in squad.Members)
+        {
+            if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+            var dest = m.Snapshot.Destinations.FirstOrDefault(c => c.Id == d.DestinationId);
+            if (dest is null || !(dest.Purpose.StartsWith("breach_", StringComparison.Ordinal) || dest.Purpose.StartsWith("support_", StringComparison.Ordinal))) continue;
+            if (Dist(m, dest.X, dest.Z) <= BreachRoute.HopTrigger) continue;
+            var hop = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "hop_" + Effective(m, decision.BreachId));
+            if (hop is not null && Dist(m, hop.X, hop.Z) > 2)
+                members[m.Snapshot.PawnId] = d with { DestinationId = hop.Id };
+        }
+        return decision with { Members = members };
+    }
+
+    private static double Dist(SquadMember m, int x, int z) =>
+        Math.Sqrt(Math.Pow(m.Snapshot.X - x, 2) + Math.Pow(m.Snapshot.Z - z, 2));
+
+    private static bool Near(SquadMember m, MovementCandidate c)
+    {
+        var dx = m.Snapshot.X - c.X;
+        var dz = m.Snapshot.Z - c.Z;
+        return Math.Sqrt(dx * dx + dz * dz) <= PressWithin;
+    }
+
+    private static MovementCandidate? StageCell(SquadMember m, string? breachId) =>
         m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "stage_" + breachId);
 
     /// <summary>
@@ -269,25 +332,26 @@ public sealed class SquadPlanner(IJevClient? client = null)
         var staged = 0;
         foreach (var m in squad.Members)
         {
-            var cell = StageCell(m, breachId);
+            var cell = StageCell(m, Effective(m, breachId));
             var dx = cell is null ? 0 : m.Snapshot.X - cell.X;
             var dz = cell is null ? 0 : m.Snapshot.Z - cell.Z;
-            if (cell is null || Math.Sqrt(dx * dx + dz * dz) <= StagedWithin) staged++;
+            var hurt = decision.Members.TryGetValue(m.Snapshot.PawnId, out var md) && md.Stance is TacticalStance.Withdraw or TacticalStance.Flee;
+            if (cell is null || hurt || Math.Sqrt(dx * dx + dz * dz) <= StagedWithin) staged++;
         }
         var ready = squad.Members.Count == 0 || staged >= Math.Ceiling(squad.Members.Count * ReadyFraction)
                     || squad.PreviousPhase != SquadPhase.Gather || squad.GatherCycles >= MaxGatherCycles;
         var phase = ready ? (decision.Phase == SquadPhase.Gather ? SquadPhase.Breach : decision.Phase) : SquadPhase.Gather;
-        if (phase != SquadPhase.Gather) return HoldRangedBehindMelee(decision with { Phase = phase }, squad, breachId);
+        if (phase != SquadPhase.Gather) return PressThrough(decision with { Phase = phase }, squad, breachId);
 
         // Gathering: every healthy raider goes to its staging cell and holds fire discipline until the signal.
         var held = new Dictionary<string, OperativeDecision>(StringComparer.Ordinal);
         foreach (var m in squad.Members)
         {
             if (!decision.Members.TryGetValue(m.Snapshot.PawnId, out var d)) continue;
-            var stage = StageCell(m, breachId);
+            var stage = StageCell(m, Effective(m, breachId));
             held[m.Snapshot.PawnId] = d.Stance is TacticalStance.Withdraw or TacticalStance.Flee || stage is null
                 ? d
-                : d with { DestinationId = stage.Id, Stance = TacticalStance.Defensive };
+                : d with { DestinationId = stage.Id, Stance = TacticalStance.Defensive, TargetId = m.IsMelee ? null : d.TargetId };
         }
         return decision with { Phase = SquadPhase.Gather, Members = held };
     }
@@ -299,6 +363,8 @@ public sealed class SquadPlanner(IJevClient? client = null)
     private static bool RoleAllows(bool isMelee, string purpose, string? breachId)
     {
         if (purpose.StartsWith("stage_", StringComparison.Ordinal))
+            return breachId is not null && purpose.EndsWith("_" + breachId, StringComparison.Ordinal);
+        if (purpose.StartsWith("press_", StringComparison.Ordinal))
             return breachId is not null && purpose.EndsWith("_" + breachId, StringComparison.Ordinal);
         if (purpose.StartsWith("breach_", StringComparison.Ordinal) || purpose.StartsWith("support_", StringComparison.Ordinal))
         {
@@ -312,7 +378,9 @@ public sealed class SquadPlanner(IJevClient? client = null)
     {
         var o = new Dictionary<string, string> { ["none"] = "No breach point; attack where the enemy is." };
         foreach (var b in points)
-            o[b.Id] = $"Breach at ({b.X},{b.Z}): weakness {b.Weakness:0.00}, {b.Defenders} defenders and {b.Turrets} turrets cover it.";
+            o[b.Id] = $"Breach at ({b.X},{b.Z}){(b.WallX >= 0 ? $" through the wall or door at ({b.WallX},{b.WallZ})" : "")}: " +
+                      $"weakness {b.Weakness:0.00}, {b.Defenders} defenders and {b.Turrets} turrets cover it" +
+                      (b.Danger > 0.05f ? $"; raiders recently fell near it (danger {b.Danger:0.00})." : ".");
         return o;
     }
 
@@ -320,7 +388,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
     {
         var o = new Dictionary<string, string> { ["none"] = "No focus target." };
         foreach (var t in targets.Values)
-            o[t.Id] = $"Visible {(t.Kind == "turret" ? $"turret (range {t.Range:0})" : "colonist")} at ({t.X},{t.Z}), threat {t.Threat:0.00}.";
+            o[t.Id] = $"Visible {(t.Kind == "turret" ? $"turret (range {t.Range:0})" : t.Kind == "enemy" ? "non-colony enemy (mech, manhunter or another faction; it attacks the raid too)" : "colonist")} at ({t.X},{t.Z}), threat {t.Threat:0.00}.";
         return o;
     }
 
@@ -328,16 +396,18 @@ public sealed class SquadPlanner(IJevClient? client = null)
     {
         var o = new Dictionary<string, string> { ["hold"] = "Remain at the current cell." };
         foreach (var c in moves.Values)
-            o[c.Id] = $"Go to cell ({c.X},{c.Z}), {c.Purpose}; cover {c.Cover:0.00}, exposure {c.Exposure:0.00}, distance {c.Distance:0.0}{(c.InTurretRange ? ", IN RANGE OF A HOSTILE TURRET (avoid unless attacking it)" : "")}.";
+            o[c.Id] = $"Go to cell ({c.X},{c.Z}), {c.Purpose}; cover {c.Cover:0.00}, exposure {c.Exposure:0.00}, distance {c.Distance:0.0}{(c.InTurretRange ? ", IN RANGE OF A HOSTILE TURRET (avoid unless attacking it)" : "")}{(c.Danger > 0.05f ? $", RAIDERS RECENTLY FELL HERE (danger {c.Danger:0.00})" : "")}.";
         return o;
     }
 
     private static SquadDecision Fallback(
         SquadSnapshot squad, IReadOnlyList<Entry> members, IReadOnlyDictionary<string, TargetCandidate> targets)
     {
-        var focus = TacticalHeuristics.PickTarget(targets.Values.ToList(), null);
-        var breach = squad.Breaches.OrderByDescending(b => b.Weakness).ThenBy(b => b.Id, StringComparer.Ordinal)
-            .FirstOrDefault()?.Id;
+        var breachPoint = squad.Breaches.OrderByDescending(b => b.Weakness).ThenBy(b => b.Id, StringComparer.Ordinal)
+            .FirstOrDefault();
+        var breach = breachPoint?.Id;
+        // Turrets cover the breach: the squad focuses a turret, ranged outshoot it while melee push.
+        var focus = TacticalHeuristics.PickTarget(targets.Values.ToList(), null, preferTurrets: breachPoint is { Turrets: > 0 });
         var decisions = new Dictionary<string, OperativeDecision>(StringComparer.Ordinal);
         for (var i = 0; i < members.Count; i++)
         {
@@ -345,9 +415,35 @@ public sealed class SquadPlanner(IJevClient? client = null)
             decisions[m.Member.Snapshot.PawnId] = TacticalHeuristics.Decide(
                 m.Moves.Values.ToList(), m.Member.Snapshot.Targets, m.Member.Snapshot.HealthFraction,
                 slot: i, focus, canFlee: !m.Member.IsOperative, lossFraction: squad.LossFraction,
-                breachId: breach, isMelee: m.Member.IsMelee);
+                breachId: Effective(m.Member, breach), isMelee: m.Member.IsMelee, preferTurrets: !m.Member.IsMelee);
         }
         return new SquadDecision(SquadTactic.FocusFire, focus, decisions, false, breach);
+    }
+
+    private static string? Effective(SquadMember m, string? mainBreachId) => m.GroupBreachId ?? mainBreachId;
+
+    /// <summary>
+    /// No more than <see cref="MaxPerTarget"/> raiders on one target: later members move to their next best visible
+    /// target that still has room, or to no target.
+    /// </summary>
+    private static SquadDecision CapTargets(SquadDecision decision, SquadSnapshot squad)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var capped = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        foreach (var m in squad.Members.OrderByDescending(m => m.IsOperative))
+        {
+            if (!capped.TryGetValue(m.Snapshot.PawnId, out var d) || d.TargetId is null) continue;
+            if (counts.GetValueOrDefault(d.TargetId) < MaxPerTarget)
+            {
+                counts[d.TargetId] = counts.GetValueOrDefault(d.TargetId) + 1;
+                continue;
+            }
+            var next = m.Snapshot.Targets.Where(t => t.Visible && t.Id != "none" && counts.GetValueOrDefault(t.Id) < MaxPerTarget)
+                .OrderByDescending(t => t.Threat).ThenBy(t => t.Id, StringComparer.Ordinal).FirstOrDefault();
+            if (next is not null) counts[next.Id] = counts.GetValueOrDefault(next.Id) + 1;
+            capped[m.Snapshot.PawnId] = d with { TargetId = next?.Id };
+        }
+        return decision with { Members = capped };
     }
 
     private sealed record Entry(SquadMember Member, Dictionary<string, MovementCandidate> Moves);

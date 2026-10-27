@@ -28,6 +28,19 @@ public sealed class RimWorldTacticalMap(
                map.reachability.CanReach(pawn.Position, c, PathEndMode.OnCell, TraverseParms.For(pawn));
     }
 
+    /// <summary>True when a wall or other solid building touches the cell: the raider hugs a wall face or corner.</summary>
+    public bool HugsWall(int x, int z)
+    {
+        for (var dx = -1; dx <= 1; dx++)
+        for (var dz = -1; dz <= 1; dz++)
+        {
+            if (dx == 0 && dz == 0) continue;
+            var n = new IntVec3(x + dx, 0, z + dz);
+            if (n.InBounds(map) && n.GetEdifice(map) is { } e && e.def.passability == Traversability.Impassable) return true;
+        }
+        return false;
+    }
+
     public bool InTurretRange(int x, int z)
     {
         var c = new IntVec3(x, 0, z);

@@ -15,18 +15,29 @@ namespace AdaptiveHostiles.Mod.Tactics;
 public static class SquadDriver
 {
     private const int BreachKeepTicks = 6000;
-    private static readonly Dictionary<string, (int Tick, List<BreachPoint> Points)> BreachMemory = new();
+    private static readonly Dictionary<string, (int Tick, List<BreachPoint> Points, int Vision)> BreachMemory = new();
+    /// <summary>Where raiders went down, shared by every raid until the game is reloaded.</summary>
+    private static readonly DangerMemory Danger = new();
+    private static readonly Dictionary<string, RaidWatch> Watches = new(StringComparer.Ordinal);
+
+    /// <summary>Per-raid bookkeeping for danger recording and the damage-dealt measure.</summary>
+    private sealed class RaidWatch
+    {
+        public readonly HashSet<string> Fallen = new(StringComparer.Ordinal);
+        public readonly Dictionary<string, (Pawn Pawn, float Health)> Defenders = new(StringComparer.Ordinal);
+        public readonly Dictionary<string, float> Walls = new(StringComparer.Ordinal);
+    }
 
     private const int PollInterval = 10;
     /// <summary>After this long the vanilla exit logic is allowed again so a raid can never hang forever.</summary>
     private const int MaxSuppressTicks = 30000;
 
-    // Longer cooldown and commitment than a lone Operative so raiders reach their cells before the next order.
+    // About one decision a second by default (the mod setting); key events re-order after the short commitment.
     private static readonly AdaptiveHostilesSettings Settings = RaidAdapter.Settings with
     {
-        MinDecisionCooldownTicks = 360,
-        MaxDecisionCooldownTicks = 600,
-        MinCommitmentTicks = 360
+        MinDecisionCooldownTicks = AdaptiveHostilesMod.SquadIntervalTicks,
+        MaxDecisionCooldownTicks = AdaptiveHostilesMod.SquadIntervalTicks + AdaptiveHostilesMod.SquadIntervalTicks / 4,
+        MinCommitmentTicks = AdaptiveHostilesMod.SquadIntervalTicks * 2 / 3
     };
     private static readonly SquadLoop Loop = new(
         new SquadPlanner(JevPlanService.SharedClient),
@@ -57,6 +68,10 @@ public static class SquadDriver
         States.Clear();
         Timings.Clear();
         Controlled.Clear();
+        BreachMemory.Clear();
+        Watches.Clear();
+        Danger.Clear();
+        BreachFinder.ResetPins();
     }
 
     public static void Tick(OperativeRegistry registry, IReadOnlyList<TrackedRaid> raids)
@@ -131,6 +146,11 @@ public static class SquadDriver
                     if (health < state.LastHealth - 0.05f) trigger |= TacticalTrigger.Damaged;
                     state.LastHealth = health;
                 }
+                // Key events re-order the squad at once (after the short commitment): a raider fell or the pinned breach wall is gone.
+                if (Watches.TryGetValue(raid.Id, out var watch) && raid.Raiders.Any(p => p is { } r && (r.Dead || r.Downed) && !watch.Fallen.Contains(r.ThingID)))
+                    trigger |= TacticalTrigger.Damaged;
+                if (members.Count > 0 && BreachMemory.TryGetValue(raid.Id, out var kept) && WallFell(kept.Points, members[0].Map))
+                    trigger |= TacticalTrigger.Damaged;
                 return trigger;
             }
         }
@@ -151,29 +171,45 @@ public static class SquadDriver
 
         public SquadSnapshot Sample()
         {
-            // Raiders with no enemy in range stay on vanilla assault AI so they keep marching on the colony.
-            var ready = members.Where(p => BlockOf(p.ThingID) == PawnBlock.None)
-                .Where(p => OperativeSampler.HostilePawns(p).Count > 0 || OperativeSampler.HostileTurrets(p).Count > 0)
+            // The squad commands the whole raid from the first cycle: a raid knows where the colony is, so every raider that can
+            // be ordered is in the squad (including late and far ones) and heads for staging, none marches on vanilla AI.
+            var colony = members.First().Map.mapPawns.FreeColonistsSpawned.Where(c => !c.Downed).ToList();
+            var ordered = members.Where(p => BlockOf(p.ThingID) == PawnBlock.None)
                 .Select(p => (Pawn: p, IsOp: registry.TryGet(p.ThingID, out _),
-                    Dist: OperativeSampler.HostilePawns(p).FirstOrDefault()?.Position.DistanceTo(p.Position) ?? float.MaxValue))
-                .OrderByDescending(x => x.IsOp).ThenBy(x => x.Dist)
-                .Take(SquadPlanner.MaxMembers)
+                    Dist: colony.Count == 0 ? float.MaxValue : colony.Min(c => c.Position.DistanceTo(p.Position)),
+                    Turrets: OperativeSampler.HostileTurrets(p).Count > 0))
                 .ToList();
             raid.Status(out var sent, out var down, out var retreated);
-            if (ready.Count == 0) return new SquadSnapshot(raid.Id, new List<SquadMember>(), sent, down, retreated);
+            if (colony.Count == 0 && !ordered.Any(x => x.Turrets))
+                return new SquadSnapshot(raid.Id, new List<SquadMember>(), sent, down, retreated);
+            var unordered = members.Where(p => BlockOf(p.ThingID) != PawnBlock.None).Select(p => $"{p.LabelShort} ({BlockOf(p.ThingID)})")
+                .Concat(ordered.OrderByDescending(x => x.IsOp).ThenBy(x => x.Pawn.thingIDNumber).Skip(SquadPlanner.MaxMembers).Select(x => $"{x.Pawn.LabelShort} (over cap)")).ToList();
+            if (unordered.Count > 0 && Find.TickManager.TicksGame % 600 < PollInterval)
+                Log.Message($"[Adaptive Hostiles] raid {raid.Id}: no order this cycle for " + string.Join(", ", unordered));
+            var ready = ordered.OrderByDescending(x => x.IsOp).ThenBy(x => x.Pawn.thingIDNumber).Take(SquadPlanner.MaxMembers)
+                .Select(x => (x.Pawn, x.IsOp, x.Dist)).ToList();
 
             // Where the colony is weakest, found once for the whole squad from the lead raider's map view.
-            var lead = ready[0].Pawn;
-            var defenders = ready.SelectMany(x => OperativeSampler.HostilePawns(x.Pawn)).Distinct().Take(16).ToList();
+            var lead = ready.OrderBy(x => x.Dist).First().Pawn;
+            var defenders = colony.OrderBy(c => c.Position.DistanceTo(lead.Position)).Take(16).ToList();
+            var hostiles = ready.SelectMany(x => OperativeSampler.HostilePawns(x.Pawn)).Concat(defenders).Distinct().Take(24).ToList();
             var turrets = OperativeSampler.HostileTurrets(lead);
             var centre = BreachFinder.DefenderCentre(defenders, turrets);
-            var leadMap = OperativeSampler.MapFor(lead, defenders);
+            var leadMap = OperativeSampler.MapFor(lead, hostiles);
             // The breach point is chosen once per raid and kept for a while: recomputing it from whichever defenders
             // happen to be visible each cycle made the squad chase a different breach every order.
             var now = Find.TickManager.TicksGame;
-            if (!BreachMemory.TryGetValue(raid.Id, out var kept) || now - kept.Tick > BreachKeepTicks || kept.Points.Count == 0)
-                BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre));
+            if (!Watches.TryGetValue(raid.Id, out var watch)) Watches[raid.Id] = watch = new RaidWatch();
+            var lostNew = RecordLosses(watch, now);
+            // Jev's picture reading is cached and fetched in the background; a new reading re-plans the breach once.
+            var visionWall = BaseVisionService.WeakWall(lead.Map);
+            if (!BreachMemory.TryGetValue(raid.Id, out var kept) || now - kept.Tick > BreachKeepTicks || kept.Points.Count == 0 || lostNew || WallFell(kept.Points, lead.Map) ||
+                kept.Vision != BaseVisionService.Version)
+                BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre, Danger, now, visionWall), BaseVisionService.Version);
             var breaches = kept.Points;
+            if (kept.Tick == now)
+                Log.Message($"[Adaptive Hostiles] breach points for raid {raid.Id}: " + string.Join("; ", breaches.Select(b =>
+                    $"{b.Id} stand ({b.X},{b.Z}) {(b.WallX >= 0 ? $"wall ({b.WallX},{b.WallZ})" : "open")} weakness {b.Weakness:0.00}")));
 
             // A squad with no melee raider has nobody to push the breach, so its ranged raiders take that role.
             var noMelee = ready.All(x => x.Pawn.equipment?.Primary is { } w && !w.def.IsMeleeWeapon);
@@ -188,13 +224,65 @@ public static class SquadDriver
                 {
                     var range = Math.Max(pawn.equipment?.PrimaryEq?.PrimaryVerb?.verbProps.range ?? 0f, 2f);
                     var roleCells = BreachFinder.RoleCells(
-                        pawn, OperativeSampler.MapFor(pawn, defenders), breaches, centre, melee, range, i, used);
+                        pawn, OperativeSampler.MapFor(pawn, hostiles), breaches, centre, melee, range, i, used);
                     snap = snap with { Destinations = roleCells.Concat(snap.Destinations).ToList() };
                 }
+                snap = snap with
+                {
+                    Destinations = snap.Destinations.Select(d => d with { Danger = Danger.Penalty(d.X, d.Z, now) }).ToList()
+                };
                 squad.Add(new SquadMember(snap, isOp, melee));
             }
-            return new SquadSnapshot(raid.Id, squad, sent, down, retreated, breaches);
+            return new SquadSnapshot(raid.Id, squad, sent, down, retreated, breaches,
+                DangerZones: Danger.Hotspots(now, 5), DamageDealt: MeasureDamage(watch, defenders, breaches), Defenders: defenders.Count);
         }
+
+        // A pinned breach whose wall or door has been destroyed is stale: the squad has to find the next one on the path.
+        private static bool WallFell(List<BreachPoint> points, Map map) =>
+            points.Any(b => b.WallX >= 0 && new IntVec3(b.WallX, 0, b.WallZ).GetEdifice(map) is null);
+
+        // Raiders that went down or died since the last cycle mark their cell as dangerous. True when there was one.
+        private bool RecordLosses(RaidWatch watch, int now)
+        {
+            var any = false;
+            foreach (var p in raid.Raiders)
+            {
+                if (p is null || !(p.Dead || p.Downed) || !watch.Fallen.Add(p.ThingID)) continue;
+                var cell = p.PositionHeld;
+                Danger.Record(cell.x, cell.z, now);
+                Log.Message($"[Adaptive Hostiles] danger: {p.LabelShort} {(p.Dead ? "died" : "went down")} at ({cell.x},{cell.z}).");
+                any = true;
+            }
+            return any;
+        }
+
+        // Defender health lost plus breach wall damage since the last cycle, as a sum of fractions; 0 means no progress.
+        private static double MeasureDamage(RaidWatch watch, List<Pawn> defenders, List<BreachPoint> breaches)
+        {
+            double damage = 0;
+            foreach (var (_, (pawn, health)) in watch.Defenders.ToList())
+                if (pawn.Dead || pawn.Downed) damage += health;
+            foreach (var d in defenders)
+            {
+                var hp = d.health.summaryHealth.SummaryHealthPercent;
+                if (watch.Defenders.TryGetValue(d.ThingID, out var prev)) damage += Math.Max(0, prev.Health - hp);
+                watch.Defenders[d.ThingID] = (d, hp);
+            }
+            foreach (var key in watch.Defenders.Where(kv => kv.Value.Pawn.Dead || kv.Value.Pawn.Downed).Select(kv => kv.Key).ToList())
+                watch.Defenders.Remove(key);
+            foreach (var bp in breaches.Where(b => b.WallX >= 0))
+            {
+                var wall = bp.WallX < 0 || Find.CurrentMap is null
+                    ? null : new IntVec3(bp.WallX, 0, bp.WallZ).GetEdifice(Find.CurrentMap);
+                var id = $"{bp.WallX},{bp.WallZ}";
+                var hp = wall is null || wall.Destroyed ? 0f : wall.HitPoints / (float)Math.Max(1, wall.MaxHitPoints);
+                if (watch.Walls.TryGetValue(id, out var before) && hp < before) damage += before - hp;
+                watch.Walls[id] = hp;
+            }
+            return damage;
+        }
+
+        public void Callout(string text) => Log.Message($"[Adaptive Hostiles] intent (raid {raid.Id}): {text}");
 
         public ITacticalMap CurrentMap(string pawnId)
         {
@@ -208,8 +296,19 @@ public static class SquadDriver
         public void Apply(string pawnId, OperativeOrder order)
         {
             if (!byId.TryGetValue(pawnId, out var pawn)) return;
-            Log.Message($"[Adaptive Hostiles] squad {pawn.LabelShort}: {order.Kind} ({order.X},{order.Z}) {order.Stance} - {order.Reason}");
-            OperativeJobExecutor.Apply(pawn, order, StateOf(pawn));
+            Log.Message($"[Adaptive Hostiles] t{Find.TickManager.TicksGame} squad {pawn.LabelShort} [{(pawn.equipment?.Primary is null || pawn.equipment.Primary.def.IsMeleeWeapon ? "melee" : "ranged")} at ({pawn.Position.x},{pawn.Position.z}) hp {pawn.health.summaryHealth.SummaryHealthPercent:0.00}]: {order.Kind} ({order.X},{order.Z}) {order.Stance} - {order.Reason}");
+            OperativeJobExecutor.Apply(pawn, order, StateOf(pawn), PinnedWall(pawn, order.Reason));
+        }
+
+        // The wall or door of the breach point named in a breach_/support_ order, while it still stands.
+        private Thing? PinnedWall(Pawn pawn, string reason)
+        {
+            var us = reason.IndexOf('_');
+            if (us < 0 || !BreachMemory.TryGetValue(raid.Id, out var kept)) return null;
+            var id = reason[(us + 1)..];
+            var bp = kept.Points.FirstOrDefault(p => p.Id == id);
+            if (bp is null || bp.WallX < 0) return null;
+            return WallBreaker.BlockerAt(pawn, new IntVec3(bp.WallX, 0, bp.WallZ));
         }
     }
 }

@@ -992,6 +992,91 @@ await Check("squad loop: remote answer arrives off-thread and stale cells are dr
     await Task.CompletedTask;
 });
 
+await Check("image requests use the image model and header; text requests do not", async () =>
+{
+    var text = new CaptureHandler();
+    using (var http = new HttpClient(text))
+        (await new JevClient(http, "k").DecideAsync(new { a = 1 }, Questions(), CancellationToken.None)).Dispose();
+    Require(text.ImagesHeader is null, "text request sent the images header");
+    Require(JsonDocument.Parse(text.Body!).RootElement.GetProperty("model").GetString() == "jev-latest", "text model changed");
+
+    var image = new CaptureHandler();
+    var png = PngWriter.EncodeIndexed(new byte[4], 2, 2, 1, new[] { ((byte)0, (byte)0, (byte)0) });
+    using (var http = new HttpClient(image))
+    {
+        var (state, questions, assets) = BaseVision.Build(new BaseImage(png, 0, 0, 2, 2));
+        (await new JevClient(http, "k").DecideAsync(state, questions, assets, CancellationToken.None)).Dispose();
+    }
+    Require(image.ImagesHeader == "true", "image request missing the images header");
+    var root = JsonDocument.Parse(image.Body!).RootElement;
+    Require(root.GetProperty("model").GetString() == "jev-1.14.0", "image model wrong");
+    Require(root.GetProperty("assets").GetProperty(BaseVision.ImageId).GetProperty("type").GetString() == "image", "asset missing");
+    Require(root.GetProperty("state").GetProperty("map").GetString() == BaseVision.ImageId, "state does not reference the image");
+    Require(root.GetProperty("questions").GetProperty("weak_wall").GetProperty("type").GetString() == "box", "box question missing");
+});
+
+await Check("png writer makes a valid scaled palette image", () =>
+{
+    var png = PngWriter.EncodeIndexed(new byte[] { 0, 1, 1, 0 }, 2, 2, 3, new[] { ((byte)10, (byte)20, (byte)30), ((byte)200, (byte)100, (byte)50) });
+    Require(png.AsSpan(0, 8).SequenceEqual(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }), "bad signature");
+    Require(System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(16)) == 6 &&
+            System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(20)) == 6, "scaled size wrong");
+    // Walk the chunks, check each CRC, and inflate the pixel data.
+    var at = 8;
+    using var idat = new MemoryStream();
+    while (at < png.Length)
+    {
+        var len = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(at));
+        var type = Encoding.ASCII.GetString(png, at + 4, 4);
+        var crc = Crc32(png.AsSpan(at + 4, len + 4));
+        Require(crc == System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(png.AsSpan(at + 8 + len)), $"bad crc in {type}");
+        if (type == "IDAT") idat.Write(png, at + 8, len);
+        at += 12 + len;
+    }
+    idat.Position = 0;
+    using var inflated = new MemoryStream();
+    using (var z = new System.IO.Compression.ZLibStream(idat, System.IO.Compression.CompressionMode.Decompress)) z.CopyTo(inflated);
+    var raw = inflated.ToArray();
+    Require(raw.Length == 6 * 7, "pixel data size wrong");
+    Require(raw[1] == 0 && raw[3] == 0 && raw[4] == 1 && raw[6] == 1, "pixels not scaled");
+    Require(raw[8] == 0 && raw[14 + 4] == 1, "rows not repeated");
+    Require(raw[21 + 1] == 1 && raw[21 + 4] == 0, "second cell row wrong");
+    return Task.CompletedTask;
+});
+
+await Check("vision answers parse and only a sealed, trusted reading yields a wall cell", () =>
+{
+    var image = new BaseImage(Array.Empty<byte>(), 100, 50, 100, 80);
+    BaseVisionResult Read(double sealedP, double hasWall, double conf, double l = 0.2, double t = 0.0, double r = 0.4, double b = 0.1) =>
+        BaseVision.Parse(JsonDocument.Parse($$$"""
+        {"answers":{"sealed":{"type":"noul","noul":{{{sealedP}}} },"has_wall":{"type":"noul","noul":{{{hasWall}}} },
+        "weak_wall":{"type":"box","box":{"top":{{{t}}},"bottom":{{{b}}},"left":{{{l}}},"right":{{{r}}} },"confidence":{{{conf}}} } } }
+        """).RootElement);
+    var ok = new BaseVisionReading(image, Read(0.9, 0.9, 0.9));
+    Require(ok.TryWallCell(out var x, out var z), "trusted reading rejected");
+    // Centre x 0.3 of 100 cells from 100; centre y 0.05 from the top of an 80-cell image whose top row is z = 129.
+    Require(x == 130 && z == 129 - 4, $"wrong cell ({x},{z})");
+    Require(!new BaseVisionReading(image, Read(0.3, 0.9, 0.9)).TryWallCell(out _, out _), "open base still gave a wall");
+    Require(!new BaseVisionReading(image, Read(0.9, 0.2, 0.9)).TryWallCell(out _, out _), "no wall still gave a wall");
+    Require(!new BaseVisionReading(image, Read(0.9, 0.9, 0.2)).TryWallCell(out _, out _), "low confidence box accepted");
+    Require(!new BaseVisionReading(image, Read(0.9, 0.9, 0.9, l: 0.6, r: 0.4)).TryWallCell(out _, out _), "inverted box accepted");
+    try { BaseVision.Parse(JsonDocument.Parse("""{"answers":{"sealed":{"type":"noul","noul":0.9}}}""").RootElement); Require(false, "partial answer accepted"); }
+    catch (InvalidDataException) { /* expected */ }
+    return Task.CompletedTask;
+});
+
+await Check("a failed vision request backs off and later retries", async () =>
+{
+    var now = DateTime.UtcNow;
+    using var scheduler = new JevScheduler<int>(null, null, () => now);
+    Require(scheduler.CanBegin("m"), "fresh scheduler blocked");
+    scheduler.TryBegin("m", _ => throw new HttpRequestException("down"));
+    await WaitFor(() => scheduler.ConsecutiveFailures == 1);
+    Require(!scheduler.CanBegin("m"), "no back-off after a failure");
+    now = now.AddMinutes(10);
+    Require(scheduler.CanBegin("m"), "back-off never ends");
+});
+
 Console.WriteLine($"Tests: {passed} passed, {failed} failed");
 Environment.ExitCode = failed == 0 ? 0 : 1;
 
@@ -1021,6 +1106,17 @@ static RosterKind[] Kinds() => new[]
     new RosterKind("Thug", RosterRole.Melee), new RosterKind("Gunner", RosterRole.Ranged),
     new RosterKind("Grenadier", RosterRole.Heavy)
 };
+
+static uint Crc32(ReadOnlySpan<byte> bytes)
+{
+    var crc = 0xFFFFFFFFu;
+    foreach (var b in bytes)
+    {
+        crc ^= b;
+        for (var k = 0; k < 8; k++) crc = (crc & 1) != 0 ? 0xEDB88320u ^ (crc >> 1) : crc >> 1;
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
 
 static void Require(bool condition, string message)
 {
@@ -1116,10 +1212,12 @@ sealed class CaptureHandler : HttpMessageHandler
     public string? Uri { get; private set; }
     public string? Authorization { get; private set; }
     public string? Body { get; private set; }
+    public string? ImagesHeader { get; private set; }
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
     {
         Uri = request.RequestUri?.ToString();
+        ImagesHeader = request.Headers.TryGetValues("TypeSafe-Danger-Zone-Images", out var h) ? string.Join(",", h) : null;
         Authorization = request.Headers.Authorization?.ToString();
         Body = await request.Content!.ReadAsStringAsync(token);
         return new HttpResponseMessage(HttpStatusCode.OK)

@@ -8,7 +8,7 @@ namespace AdaptiveHostiles.Core;
 /// Minimal official TypeSafe System One client. Use a shared HttpClient, never call
 /// this on RimWorld's main thread, and never log the supplied API key.
 /// </summary>
-public sealed class JevClient : IJevClient
+public sealed class JevClient : IJevClient, IImageDecisionClient
 {
     public const string OfficialEndpoint = "https://api.typesafe.ai/v1/systemone";
     private readonly HttpClient _http;
@@ -23,15 +23,29 @@ public sealed class JevClient : IJevClient
         _apiKey = apiKey;
     }
 
-    public async Task<JsonDocument> DecideAsync(
-        object state, IReadOnlyDictionary<string, object> questions, CancellationToken cancellationToken)
+    public const string TextModel = "jev-latest";
+    /// <summary>Images and Box questions need this model and the images header.</summary>
+    public const string ImageModel = "jev-1.14.0";
+    public const string ImagesHeader = "TypeSafe-Danger-Zone-Images";
+
+    public Task<JsonDocument> DecideAsync(
+        object state, IReadOnlyDictionary<string, object> questions, CancellationToken cancellationToken) =>
+        PostAsync(new { model = TextModel, state, questions }, images: false, questions.Count, cancellationToken);
+
+    public Task<JsonDocument> DecideAsync(
+        object state, IReadOnlyDictionary<string, object> questions, IReadOnlyDictionary<string, object> assets,
+        CancellationToken cancellationToken) =>
+        PostAsync(new { model = ImageModel, state, assets, questions }, images: true, questions.Count, cancellationToken);
+
+    private async Task<JsonDocument> PostAsync(object body, bool images, int questionCount, CancellationToken cancellationToken)
     {
-        if (questions.Count == 0)
-            throw new ArgumentException("At least one decision question is required", nameof(questions));
+        if (questionCount == 0)
+            throw new ArgumentException("At least one decision question is required", "questions");
 
         using var request = new HttpRequestMessage(HttpMethod.Post, OfficialEndpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
-        request.Content = JsonContent.Create(new { model = "jev-latest", state, questions });
+        if (images) request.Headers.Add(ImagesHeader, "true");
+        request.Content = JsonContent.Create(body);
 
         using var response = await _http.SendAsync(
             request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
@@ -50,6 +64,14 @@ public interface IJevClient
 {
     Task<JsonDocument> DecideAsync(
         object state, IReadOnlyDictionary<string, object> questions, CancellationToken cancellationToken);
+}
+
+/// <summary>A decision client that can read images (Jev only). Assets map an id used in the state to an image.</summary>
+public interface IImageDecisionClient
+{
+    Task<JsonDocument> DecideAsync(
+        object state, IReadOnlyDictionary<string, object> questions, IReadOnlyDictionary<string, object> assets,
+        CancellationToken cancellationToken);
 }
 
 public static class JevAnswers

@@ -31,7 +31,7 @@ public static class BreachFinder
     /// </summary>
     public static List<BreachPoint> Find(
         Pawn reference, RimWorldTacticalMap map, IReadOnlyList<Pawn> defenders,
-        IReadOnlyList<Building_Turret> turrets, IntVec3 centre, DangerMemory danger, long now)
+        IReadOnlyList<Building_Turret> turrets, IntVec3 centre, DangerMemory danger, long now, IntVec3? visionWall = null)
     {
         var candidates = new List<BreachPoint>();
         if (!centre.IsValid) return candidates;
@@ -56,7 +56,30 @@ public static class BreachFinder
             var weakness = BreachRoute.Weakness(sees, covered, fell);
             candidates.Add(new BreachPoint("", s.StandX, s.StandZ, weakness, sees, covered, s.WallX, s.WallZ, fell));
         }
+        if (visionWall is { } hinted && VisionCandidate(reference, map, hinted) is { } extra)
+        {
+            var cell = new IntVec3(extra.StandX, 0, extra.StandZ);
+            var sees = defenders.Count(d => d.Position.DistanceTo(cell) <= DefenderSightRange &&
+                                            GenSight.LineOfSight(d.Position, cell, reference.Map));
+            var covered = turrets.Count(t => cell.DistanceTo(t.Position) <= OperativeSampler.TurretRange(t) + 1f);
+            var fell = danger.Penalty(extra.StandX, extra.StandZ, now);
+            candidates.Add(new BreachPoint("", extra.StandX, extra.StandZ, BreachRoute.Weakness(sees, covered, fell), sees, covered,
+                extra.WallX, extra.WallZ, fell));
+            Log.Message($"[Adaptive Hostiles] Jev image candidate: wall ({extra.WallX},{extra.WallZ}), stand ({extra.StandX},{extra.StandZ}).");
+        }
         return BreachRoute.Pick(candidates, MaxPoints, MinSpacing);
+    }
+
+    // The wall or door nearest the cell Jev pointed at, with the raiders' side stand cell next to it; null when none is within reach.
+    private static BreachSite? VisionCandidate(Pawn reference, RimWorldTacticalMap map, IntVec3 hint)
+    {
+        var found = GenRadial.RadialCellsAround(hint, 4f, true).Where(c => c.InBounds(reference.Map))
+            .Cast<IntVec3?>().FirstOrDefault(c => WallBreaker.BlockerAt(reference, c!.Value) is not null);
+        if (found is not { } wall) return null;
+        var stand = GenAdj.CellsAdjacent8Way(new TargetInfo(wall, reference.Map))
+            .Where(c => map.IsStandable(c.x, c.z) && map.IsReachable(c.x, c.z))
+            .OrderBy(c => c.DistanceToSquared(reference.Position)).Cast<IntVec3?>().FirstOrDefault();
+        return stand is { } s ? new BreachSite(s.x, s.z, wall.x, wall.z) : null;
     }
 
     /// <summary>

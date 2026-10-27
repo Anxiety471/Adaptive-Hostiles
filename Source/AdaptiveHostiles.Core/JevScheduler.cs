@@ -44,6 +44,13 @@ public sealed class JevScheduler<T> : IDisposable
     public int InFlightCount { get { lock (_gate) return _inFlight.Count; } }
     public int ConsecutiveFailures { get { lock (_gate) return _failures; } }
 
+    /// <summary>True when <see cref="TryBegin"/> would start work now, so callers can skip preparing it otherwise.</summary>
+    public bool CanBegin(string key)
+    {
+        lock (_gate)
+            return !_inFlight.ContainsKey(key) && _inFlight.Count < _maxConcurrent && _now() >= _blockedUntil;
+    }
+
     /// <summary>Starts <paramref name="work"/> unless the key is busy, the cap is reached or we are backing off.</summary>
     public bool TryBegin(string key, Func<CancellationToken, Task<T>> work)
     {

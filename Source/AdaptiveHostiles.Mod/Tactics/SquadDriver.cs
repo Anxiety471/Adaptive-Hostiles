@@ -15,7 +15,7 @@ namespace AdaptiveHostiles.Mod.Tactics;
 public static class SquadDriver
 {
     private const int BreachKeepTicks = 6000;
-    private static readonly Dictionary<string, (int Tick, List<BreachPoint> Points)> BreachMemory = new();
+    private static readonly Dictionary<string, (int Tick, List<BreachPoint> Points, int Vision)> BreachMemory = new();
     /// <summary>Where raiders went down, shared by every raid until the game is reloaded.</summary>
     private static readonly DangerMemory Danger = new();
     private static readonly Dictionary<string, RaidWatch> Watches = new(StringComparer.Ordinal);
@@ -201,8 +201,11 @@ public static class SquadDriver
             var now = Find.TickManager.TicksGame;
             if (!Watches.TryGetValue(raid.Id, out var watch)) Watches[raid.Id] = watch = new RaidWatch();
             var lostNew = RecordLosses(watch, now);
-            if (!BreachMemory.TryGetValue(raid.Id, out var kept) || now - kept.Tick > BreachKeepTicks || kept.Points.Count == 0 || lostNew || WallFell(kept.Points, lead.Map))
-                BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre, Danger, now));
+            // Jev's picture reading is cached and fetched in the background; a new reading re-plans the breach once.
+            var visionWall = BaseVisionService.WeakWall(lead.Map);
+            if (!BreachMemory.TryGetValue(raid.Id, out var kept) || now - kept.Tick > BreachKeepTicks || kept.Points.Count == 0 || lostNew || WallFell(kept.Points, lead.Map) ||
+                kept.Vision != BaseVisionService.Version)
+                BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre, Danger, now, visionWall), BaseVisionService.Version);
             var breaches = kept.Points;
             if (kept.Tick == now)
                 Log.Message($"[Adaptive Hostiles] breach points for raid {raid.Id}: " + string.Join("; ", breaches.Select(b =>

@@ -137,7 +137,11 @@ public static class BreachFinder
                 var plen = Math.Max(1f, (float)Math.Sqrt(px * px + pz * pz));
                 var stop = isMelee ? 2f : 7f;
                 var ahead = Math.Min((through ? 8f : 3f) + slot, Math.Max(2f, plen - stop));
-                Add(result, pawn, map, Pinned(pawn, map, "press_" + bp.Id, () => FindCell(map, ox + (int)Math.Round(px / plen * ahead), oz + (int)Math.Round(pz / plen * ahead), slot, used, null)),
+                // Straight toward the defenders can land inside a sealed room the raider cannot reach; then the press cell is the
+                // reachable cell nearest the defenders, so the raider still has somewhere to press to instead of idling at the breach.
+                Add(result, pawn, map, Pinned(pawn, map, "press_" + bp.Id, () =>
+                        FindCell(map, ox + (int)Math.Round(px / plen * ahead), oz + (int)Math.Round(pz / plen * ahead), slot, used, null) ??
+                        FindCell(map, centre.x, centre.z, slot, used, null, maxRing: 16)),
                     "press_" + bp.Id, used);
             }
             // A stalled assault sends ranged raiders to open a wall too, so they are offered the breach cell as well.
@@ -208,9 +212,9 @@ public static class BreachFinder
 
     // Nearest free standable, reachable cell around the anchor; slot rotates the search so members spread.
     private static (int, int)? FindCell(
-        RimWorldTacticalMap map, int ax, int az, int slot, HashSet<(int, int)> used, Func<int, int, bool>? allowed = null)
+        RimWorldTacticalMap map, int ax, int az, int slot, HashSet<(int, int)> used, Func<int, int, bool>? allowed = null, int maxRing = 4)
     {
-        for (var r = 0; r <= 4; r++)
+        for (var r = 0; r <= maxRing; r++)
         {
             var ring = new List<(int, int)>();
             for (var dx = -r; dx <= r; dx++)

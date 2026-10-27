@@ -35,6 +35,8 @@ public static class OperativeJobExecutor
         if (order.Kind == OrderKind.MoveTo)
         {
             var dest = new IntVec3(order.X, 0, order.Z);
+            // Like a drafted colonist: anything in weapon range is attacked where the raider stands, the order's cell comes after.
+            if (order.Stance != TacticalStance.Withdraw && EngageInRange(pawn, target, state)) return;
             // A melee raider that can reach an enemy goes for it; the ordered target may be far off or walled in.
             if (IsMelee(pawn) && order.Stance != TacticalStance.Withdraw && !MeleeCanGo(pawn, target))
                 target = state.Target = NearestReachableEnemy(pawn);
@@ -139,6 +141,36 @@ public static class OperativeJobExecutor
         if (pawn.Position.DistanceTo(dest) > 2f) return false;
         var def = job.def;
         return def == JobDefOf.Wait_Combat || def == JobDefOf.AttackStatic || def == JobDefOf.AttackMelee;
+    }
+
+    private const float MeleeEngage = 5f;
+
+    /// <summary>
+    /// Draft-mode behaviour: a ranged raider shoots the ordered target, else the nearest enemy it can hit from where it stands;
+    /// a melee raider fights the nearest reachable enemy within a few cells. The attack runs on across cycles and the raider
+    /// resumes its order once nothing is left in range. Returns true when an attack is running.
+    /// </summary>
+    private static bool EngageInRange(Pawn pawn, Thing? ordered, OperativeRuntimeState state)
+    {
+        Thing? pick = null;
+        if (IsMelee(pawn))
+            pick = OperativeSampler.HostilePawns(pawn).FirstOrDefault(p =>
+                pawn.Position.DistanceTo(p.Position) <= MeleeEngage && pawn.CanReach(p, PathEndMode.Touch, Danger.Deadly));
+        else if (ordered != null && CanAttackFromHere(pawn, ordered)) pick = ordered;
+        else
+        {
+            pick = OperativeSampler.HostilePawns(pawn).Take(6).FirstOrDefault(p => CanAttackFromHere(pawn, p)) as Thing
+                   ?? OperativeSampler.HostileTurrets(pawn).Take(4).FirstOrDefault(t => CanAttackFromHere(pawn, t));
+        }
+        if (pick is null) return false;
+
+        var cur = pawn.CurJob;
+        if (cur != null && (cur.def == JobDefOf.AttackStatic || cur.def == JobDefOf.AttackMelee) && cur.targetA.Thing == pick) return true;
+        state.Target = pick;
+        state.Destination = null;
+        Start(pawn, MakeAttack(pawn, pick), state);
+        pawn.jobs.jobQueue.EnqueueLast(MakeHold());
+        return true;
     }
 
     private static bool MeleeCanGo(Pawn pawn, Thing? target) =>

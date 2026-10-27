@@ -662,7 +662,8 @@ await Check("C5 intent log: one mod-log callout per phase change, never repeated
     host.Snapshot = StagedSquad(arrived: true);
     loop.Tick("s", host, 2000, 1);
     loop.Tick("s", host, 3000, 1);
-    Require(host.Callouts.Count == 2 && host.Callouts[1].Contains("melee pushing"), "breach callout missing or repeated");
+    var intents = host.Callouts.Where(c => !c.StartsWith("sync:")).ToList();
+    Require(intents.Count == 2 && intents[1].Contains("melee pushing") && host.Callouts.Any(c => c.StartsWith("sync:")), "breach callout missing or repeated");
     Require(IntentLog.Describe(SquadPhase.Press, new SquadDecision(SquadTactic.FocusFire, null, new Dictionary<string, OperativeDecision>(), false),
         host.Snapshot).Contains("no breach point"), "no-breach intent unclear");
     return Task.CompletedTask;

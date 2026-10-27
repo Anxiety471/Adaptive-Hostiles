@@ -34,6 +34,7 @@ public sealed class SquadLoop
     private readonly Dictionary<string, long> _gatherStart = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _callStart = new(StringComparer.Ordinal);
     private readonly List<double> _latencyMs = new();
+    private readonly Dictionary<string, string> _sync = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _chosen = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (IReadOnlyList<string> PawnIds, string BreachKey)> _split = new(StringComparer.Ordinal);
 
@@ -57,6 +58,7 @@ public sealed class SquadLoop
         _gatherStart.Remove(squadId);
         _stall.Remove(squadId);
         _chosen.Remove(squadId);
+        _sync.Remove(squadId);
         _withdrawn.Remove(squadId);
         _split.Remove(squadId);
     }
@@ -68,6 +70,7 @@ public sealed class SquadLoop
         _gatherStart.Clear();
         _stall.Clear();
         _chosen.Clear();
+        _sync.Clear();
         _withdrawn.Clear();
         _split.Clear();
         _scheduler?.Reset();
@@ -127,6 +130,22 @@ public sealed class SquadLoop
         if (decision.BreachId is not null) _chosen[squadId] = decision.BreachId;
         if (!_phase.ContainsKey(squadId) || prior.Phase != decision.Phase)
             host.Callout(IntentLog.Describe(decision.Phase, decision, offered));
+        if (decision.BreachId is not null && decision.Phase != SquadPhase.Gather)
+        {
+            // Melee/ranged sync, logged whenever it changes so a run shows when melee held and what the ranged were told.
+            var c = SquadCoordination.Measure(offered, decision.BreachId);
+            if (c.HasBoth)
+            {
+                var key = $"{decision.MeleeHold}/{decision.RangedRole}/{c.MeleeIsThrough}/{c.RangedIsReady}";
+                if (!_sync.TryGetValue(squadId, out var last) || last != key)
+                {
+                    _sync[squadId] = key;
+                    host.Callout($"sync: melee {(decision.MeleeHold ? "asked to hold for cover" : "go")}, ranged {decision.RangedRole}; " +
+                                 $"{c.MeleeThrough}/{c.Melee} melee through, {c.RangedInPosition}/{c.Ranged} ranged in position, " +
+                                 $"nearest melee {c.MeleeNearestToBreach:0.#} from the breach cell");
+                }
+            }
+        }
         if (decision.Phase == SquadPhase.Gather) _gatherStart.TryAdd(squadId, tick); else _gatherStart.Remove(squadId);
         var gather = decision.Phase == SquadPhase.Gather ? prior.GatherCycles + 1 : 0;
         var breach = decision.Phase == SquadPhase.Gather ? 0 : prior.BreachCycles + 1;

@@ -323,7 +323,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
     }
 
     /// <summary>
-    /// Ranged raiders do not kite or hold a firing distance: an enemy within <see cref="PointBlank"/> cells is shot where the raider
+    /// Ranged raiders kite (<see cref="SquadCoordination.KiteCell"/>) when an enemy's weapon reaches them and they can outrange it; otherwise an enemy within <see cref="PointBlank"/> cells is shot where the raider
     /// stands. Once the squad has gone, a ranged raider that reached its support cell at an open breach with no one in sight moves
     /// up to the opening instead of idling outside.
     /// </summary>
@@ -334,6 +334,14 @@ public sealed class SquadPlanner(IJevClient? client = null)
         foreach (var m in squad.Members.Where(m => !m.IsMelee))
         {
             if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+            // Outranging beats standing and trading shots: step to a cell outside the enemies' weapon range but inside our own.
+            if (SquadCoordination.KiteCell(m) is { } kite)
+            {
+                var nearest = m.Snapshot.Targets.Where(t => t.Visible && t.Kind != "turret")
+                    .OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).First();
+                members[m.Snapshot.PawnId] = d with { DestinationId = kite.Id, TargetId = nearest.Id, Stance = TacticalStance.Aggressive, Kite = true };
+                continue;
+            }
             var close = m.Snapshot.Targets.Where(t => t.Visible && Dist(m, t.X, t.Z) <= PointBlank)
                 .OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).FirstOrDefault();
             if (close is not null)

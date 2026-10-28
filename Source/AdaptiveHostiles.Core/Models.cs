@@ -56,7 +56,8 @@ public sealed record OperativeSnapshot(
     int NearbyAllies,
     IReadOnlyList<MovementCandidate> Destinations,
     IReadOnlyList<TargetCandidate> Targets,
-    bool NeedsTending = false);
+    bool NeedsTending = false,
+    float WeaponRange = 0f);
 
 /// <summary>Flee leaves the map and is only ever available to ordinary raiders, never the Operative.</summary>
 public enum TacticalStance { Defensive, Aggressive, Withdraw, Flee }
@@ -67,4 +68,5 @@ public sealed record OperativeDecision(
     string DestinationId,
     string? TargetId,
     TacticalStance Stance,
-    bool IsModelDecision);
+    bool IsModelDecision,
+    bool Kite = false);

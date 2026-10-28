@@ -56,6 +56,10 @@ public static class OperativeSampler
 
     public static float TurretRange(Building_Turret t) => t.AttackVerb?.verbProps.range ?? 0f;
 
+    /// <summary>How far a pawn can hit: its ranged weapon's range, or 0 when it fights in melee (so kiting can tell them apart).</summary>
+    public static float WeaponReach(Pawn p) =>
+        p.equipment?.Primary is { } w && !w.def.IsMeleeWeapon ? p.equipment.PrimaryEq?.PrimaryVerb?.verbProps.range ?? 0f : 0f;
+
     public static RimWorldTacticalMap MapFor(Pawn self, List<Pawn> hostiles) =>
         new(self, hostiles.Take(MaxThreats).Select(p => p.Position).ToList(),
             HostileTurrets(self).Select(t => (t.Position, TurretRange(t))).ToList());
@@ -90,12 +94,12 @@ public static class OperativeSampler
             {
                 // Mechs, manhunters and other factions' pawns shoot at the raid too: engage them before they close in.
                 targets.Add(new TargetCandidate(TargetIdFor(p), p.Position.x, p.Position.z,
-                    EnemyThreat + closeness * 0.2f, true, "enemy"));
+                    EnemyThreat + closeness * 0.2f, true, "enemy", WeaponReach(p)));
                 continue;
             }
             var armed = p.equipment?.Primary != null ? 0.5f : 0.2f;
             targets.Add(new TargetCandidate(TargetIdFor(p), p.Position.x, p.Position.z,
-                armed + closeness * 0.5f, true, "pawn", 0f, p.health.summaryHealth.SummaryHealthPercent));
+                armed + closeness * 0.5f, true, "pawn", WeaponReach(p), p.health.summaryHealth.SummaryHealthPercent));
         }
 
         var allies = self.Map.mapPawns.AllPawnsSpawned.Count(p =>
@@ -106,7 +110,7 @@ public static class OperativeSampler
             self.ThingID, self.Position.x, self.Position.z,
             self.health.summaryHealth.SummaryHealthPercent,
             self.equipment?.Primary?.def.defName ?? "Unarmed",
-            allies, destinations, targets, self.health.HasHediffsNeedingTend());
+            allies, destinations, targets, self.health.HasHediffsNeedingTend(), range);
     }
 
     /// <summary>States the Operative must not be pulled out of.</summary>

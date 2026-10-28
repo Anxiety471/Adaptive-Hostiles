@@ -887,6 +887,26 @@ await Check("ranged: shoot point blank instead of kiting, and move up at an open
     Require(walled.Members["r1"].DestinationId == "r_s", "ranged left its support cell at a walled breach");
 });
 
+await Check("kite: a ranged raider steps outside the colonists' weapon range, inside its own", async () =>
+{
+    MovementCandidate C(string id, string purpose, int x, int z) => new(id, x, z, 0.5f, 0.2f, 10, purpose, true);
+    SquadMember Raider(int enemyRange, params MovementCandidate[] cells) =>
+        new(new OperativeSnapshot("r1", 100, 90, 1f, "x", 2, cells,
+            new[] { new TargetCandidate("c1", 106, 90, 0.9f, true, "pawn", enemyRange) }, false, 30f), false, false);
+    // Colonist with a 20-cell rifle 6 cells away: the cell 18 cells off (and inside the raider's 30) outranges it.
+    var m = Raider(20, C("near", "cover", 98, 90), C("out", "firing_position", 88, 90), C("toward", "cover", 104, 90));
+    Require(SquadCoordination.KiteCell(m)?.Id == "out", "no outranging cell chosen for a shorter-range colonist");
+    // A colonist outranging us gives nothing to gain.
+    Require(SquadCoordination.KiteCell(Raider(35, C("out", "firing_position", 88, 90))) is null, "kited from an enemy that outranges it");
+    // Already outside the colonist's reach: stay and shoot.
+    var safe = new SquadMember(m.Snapshot with { X = 70, Z = 90, Targets = new[] { new TargetCandidate("c1", 100, 90, 0.9f, true, "pawn", 20f) } }, false, false);
+    Require(SquadCoordination.KiteCell(safe) is null, "kited while already outside the enemy's range");
+    // Through the planner: the order carries the kite flag and the shot target.
+    var squad = new SquadSnapshot("s", new[] { m }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
+    var d = await new SquadPlanner().DecideAsync(squad);
+    Require(d.Members["r1"].DestinationId == "out" && d.Members["r1"].Kite && d.Members["r1"].TargetId == "c1", "planner did not turn the kite into an order");
+});
+
 await Check("targets: a badly hurt enemy is finished before the focus target", async () =>
 {
     var strong = new TargetCandidate("a", 10, 10, 0.9f, true);

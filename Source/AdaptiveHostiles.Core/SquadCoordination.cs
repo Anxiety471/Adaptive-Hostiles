@@ -163,6 +163,41 @@ public static class SquadCoordination
         return decision with { Members = members };
     }
 
+    /// <summary>A melee enemy is treated as reaching this far, since it closes the last cells in a moment.</summary>
+    public const float MeleeReach = 3f;
+    /// <summary>A kite spot should lie at least this many cells outside every enemy's weapon range.</summary>
+    public const float KiteMargin = 1.5f;
+    public const float KiteMinMove = 4f;
+    public const float KiteMaxMove = 12f;
+
+    /// <summary>
+    /// The cell a ranged raider steps to so it outranges the enemies near it: outside every visible enemy's weapon range and still
+    /// within its own, a few cells away (up to half its range, 4 to 12 cells). Null when nothing is gained: it is already outside
+    /// every enemy's reach, an enemy outranges it, or no offered cell is safer than where it stands.
+    /// </summary>
+    public static MovementCandidate? KiteCell(SquadMember m)
+    {
+        var mine = m.Snapshot.WeaponRange > 0 ? m.Snapshot.WeaponRange : 20f;
+        var threats = m.Snapshot.Targets.Where(t => t.Visible && t.Kind != "turret")
+            .Select(t => (T: t, Reach: t.Range > 2f ? t.Range : MeleeReach)).ToList();
+        if (threats.Count == 0) return null;
+        if (threats.Any(e => e.Reach >= mine)) return null;
+
+        double Margin(int x, int z) => threats.Min(e => Math.Sqrt(Math.Pow(x - e.T.X, 2) + Math.Pow(z - e.T.Z, 2)) - e.Reach);
+        double Nearest(int x, int z) => threats.Min(e => Math.Sqrt(Math.Pow(x - e.T.X, 2) + Math.Pow(z - e.T.Z, 2)));
+        var here = Margin(m.Snapshot.X, m.Snapshot.Z);
+        if (here > KiteMargin) return null;
+
+        var move = Math.Clamp(mine * 0.5f, KiteMinMove, KiteMaxMove);
+        return m.Snapshot.Destinations
+            .Where(c => c.Reachable && !c.InTurretRange && c.Purpose is "cover" or "firing_position" or "retreat" &&
+                        Math.Sqrt(Math.Pow(c.X - m.Snapshot.X, 2) + Math.Pow(c.Z - m.Snapshot.Z, 2)) <= move &&
+                        Nearest(c.X, c.Z) <= mine && Margin(c.X, c.Z) > here + 1)
+            .OrderByDescending(c => Math.Min(Margin(c.X, c.Z), KiteMargin * 3))
+            .ThenBy(c => Math.Pow(c.X - m.Snapshot.X, 2) + Math.Pow(c.Z - m.Snapshot.Z, 2))
+            .ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault();
+    }
+
     private static MovementCandidate? Cell(SquadMember m, string prefix, string? id) =>
         id is null ? null : m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == prefix + id);
 

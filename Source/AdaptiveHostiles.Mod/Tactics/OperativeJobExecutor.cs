@@ -38,7 +38,7 @@ public static class OperativeJobExecutor
             // A turret that is about to blow up: get out of the blast first, then carry on.
             if (EvadeBlast(pawn, state)) return;
             // Like a drafted colonist: anything in weapon range is attacked where the raider stands, the order's cell comes after.
-            if (order.Stance != TacticalStance.Withdraw && EngageInRange(pawn, target, state)) return;
+            if (!order.Kite && order.Stance != TacticalStance.Withdraw && EngageInRange(pawn, target, state)) return;
             // A melee raider that can reach an enemy goes for it; the ordered target may be far off or walled in.
             if (IsMelee(pawn) && order.Stance != TacticalStance.Withdraw && !MeleeCanGo(pawn, target))
                 target = state.Target = NearestReachableEnemy(pawn);
@@ -50,7 +50,7 @@ public static class OperativeJobExecutor
                                                           target != null && (IsMelee(pawn) ? MeleeCanGo(pawn, target) : CanAttackFromHere(pawn, target))))
                 return;
             var go = JobMaker.MakeJob(JobDefOf.Goto, dest);
-            go.locomotionUrgency = order.Stance == TacticalStance.Defensive || pawn.Position.DistanceTo(dest) < 15f
+            go.locomotionUrgency = !order.Kite && (order.Stance == TacticalStance.Defensive || pawn.Position.DistanceTo(dest) < 15f)
                 ? LocomotionUrgency.Jog : LocomotionUrgency.Sprint;
             go.checkOverrideOnExpire = true;
             Start(pawn, go, state);

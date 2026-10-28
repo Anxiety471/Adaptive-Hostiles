@@ -192,7 +192,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
             };
         }
 
-        if (members.Any(m => !m.Member.IsMelee) && squad.Targets.Any(t => t.Kind != "turret"))
+        if (members.Any(m => SquadCoordination.CarriesRangedWeapon(m.Member)) && squad.Targets.Any(t => t.Kind != "turret"))
         {
             questions["engagement"] = new
             {

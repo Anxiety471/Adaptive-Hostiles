@@ -178,7 +178,7 @@ public sealed class SquadLoop
             if (!_sync.TryGetValue(squadId + "/funnel", out var lastFunnel) || lastFunnel != funnel)
             { _sync[squadId + "/funnel"] = funnel; host.Callout(funnel); }
         }
-        if (offered.Members.Any(m => !m.IsMelee) && offered.Targets.Any(t => t.Kind != "turret"))
+        if (offered.Members.Any(SquadCoordination.CarriesRangedWeapon) && offered.Targets.Any(t => t.Kind != "turret"))
         {
             var engage = $"engagement: ranged {(decision.AllIn ? "all in (no kiting)" : "kiting when outranged")}";
             if (!_sync.TryGetValue(squadId + "/engage", out var lastEngage) || lastEngage != engage)

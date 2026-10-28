@@ -618,7 +618,9 @@ await Check("B3 split: 6+ raiders against a thin defence send one melee and one 
     Require(pick is { } p && p.BreachId == "B2" && p.PawnIds.Count == 2 && !p.PawnIds.Contains("op"), "wrong split");
     Require(pick!.Value.PawnIds.Contains("m2") && pick.Value.PawnIds.Contains("r3"), "group is not one melee and one ranged");
     Require(SquadSplit.Choose(six.Take(5).ToList(), pts, "B1", 2) is null, "split with fewer than 6 raiders");
-    Require(SquadSplit.Choose(six, pts, "B1", 4) is null, "split against a strong defence");
+    Require(SquadSplit.Choose(six, pts, "B1", 7) is null, "split against a defence larger than the squad");
+    Require(SquadSplit.GroupSizeFor(6) == 2 && SquadSplit.GroupSizeFor(12) == 3 && SquadSplit.GroupSizeFor(40) == 4, "flank group size");
+    Require(SquadSplit.Choose(six, pts, "B1", 6) is not null, "no flank against a defence as large as the squad");
     Require(SquadSplit.Choose(six, pts.Take(1).ToList(), "B1", 2) is null, "split with one breach point");
 
     var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());

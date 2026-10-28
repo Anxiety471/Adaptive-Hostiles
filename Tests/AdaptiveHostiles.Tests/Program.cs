@@ -1173,6 +1173,31 @@ await Check("ranged go in behind engaged melee at a sealed breach instead of wai
     Require(d2.Members["r1"].DestinationId != "r1_in", "ranged went in before the melee were engaged");
 });
 
+await Check("a withdrawn raider stays out until it has treated its wounds, with a cap on the wait", () =>
+{
+    MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
+    SquadSnapshot Snap(float hp, bool needsTending) => new("s", new[] { new SquadMember(new OperativeSnapshot("r1", 120, 90, hp, "x", 1,
+        new[] { C("safe", "retreat", 60), C("push", "press_B1", 135) }, System.Array.Empty<TargetCandidate>(), needsTending), false, true) },
+        4, 0, 0, new[] { new BreachPoint("B1", 130, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
+    var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());
+    var host = new FakeSquadHost();
+    host.Snapshot = Snap(0.2f, true);           // hurt: withdraws
+    loop.Tick("s", host, 600, 1);
+    Require(host.Applied.Last().Order.Stance == TacticalStance.Withdraw, "hurt raider did not withdraw");
+    host.Snapshot = Snap(0.9f, true);           // healed enough but still untreated: stays out
+    loop.Tick("s", host, 2000, 1);
+    Require(host.Applied.Last().Order.Stance == TacticalStance.Withdraw, "untreated raider went back in");
+    host.Snapshot = Snap(0.9f, true);           // still untreated after the wait cap: released anyway
+    loop.Tick("s", host, 600 + (int)SquadLoop.MaxTendWaitTicks + 100, 1);
+    Require(host.Applied.Last().Order.Stance != TacticalStance.Withdraw, "untreated raider held out past the cap");
+    host.Snapshot = Snap(0.2f, true);
+    loop.Tick("s", host, 5000, 1);
+    host.Snapshot = Snap(0.9f, false);          // treated: released
+    loop.Tick("s", host, 9000, 1);
+    Require(host.Applied.Last().Order.Stance != TacticalStance.Withdraw, "treated raider stayed out");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"Tests: {passed} passed, {failed} failed");
 Environment.ExitCode = failed == 0 ? 0 : 1;
 

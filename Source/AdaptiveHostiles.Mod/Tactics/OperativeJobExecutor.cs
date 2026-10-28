@@ -40,6 +40,8 @@ public static class OperativeJobExecutor
             // A melee raider that can reach an enemy goes for it; the ordered target may be far off or walled in.
             if (IsMelee(pawn) && order.Stance != TacticalStance.Withdraw && !MeleeCanGo(pawn, target))
                 target = state.Target = NearestReachableEnemy(pawn);
+            // A retreated raider that reached its safe cell treats its own wounds before anything else.
+            if (order.Stance == TacticalStance.Withdraw && pawn.Position.DistanceTo(dest) <= 2f && TendSelf(pawn, state)) return;
             // Re-issuing the same order every cycle would restart the aim; let a walk or a shoot run on.
             // A raider that only waits at its cell while an enemy is now in reach attacks instead of idling there.
             if (AlreadyCarryingOut(pawn, dest, state) && !(pawn.CurJob?.def == JobDefOf.Wait_Combat && order.Stance != TacticalStance.Withdraw &&
@@ -66,6 +68,9 @@ public static class OperativeJobExecutor
             // or across the base pulled raiders off their cells and left them stuck against the wall.
             if (target != null && order.Stance != TacticalStance.Withdraw && (!IsMelee(pawn) || MeleeCanGo(pawn, target)))
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, target));
+            // A raider walking back to safety tends itself on arrival.
+            if (order.Stance == TacticalStance.Withdraw && pawn.health.HasHediffsNeedingTend())
+                pawn.jobs.jobQueue.EnqueueLast(MakeTendSelf(pawn));
             // Never leave the queue empty: when it runs out vanilla assault AI would walk the raider elsewhere.
             pawn.jobs.jobQueue.EnqueueLast(MakeHold());
             return;
@@ -73,6 +78,7 @@ public static class OperativeJobExecutor
 
         // Hold: stay put, shooting only if the chosen target is actually hittable from here.
         state.Destination = null;
+        if (order.Stance == TacticalStance.Withdraw && TendSelf(pawn, state)) return;
         if (target != null && order.Stance != TacticalStance.Withdraw && CanAttackFromHere(pawn, target))
         {
             Start(pawn, MakeAttack(pawn, target), state);
@@ -82,6 +88,24 @@ public static class OperativeJobExecutor
         {
             Start(pawn, MakeHold(), state);
         }
+    }
+
+    private static Job MakeTendSelf(Pawn pawn)
+    {
+        var job = JobMaker.MakeJob(JobDefOf.TendPatient, pawn);
+        job.expiryInterval = 600;
+        return job;
+    }
+
+    /// <summary>Starts self-treatment when the raider has wounds needing it, no enemy is close and it is not already tending.</summary>
+    private static bool TendSelf(Pawn pawn, OperativeRuntimeState state)
+    {
+        if (pawn.CurJob?.def == JobDefOf.TendPatient) return true;
+        if (!pawn.health.HasHediffsNeedingTend()) return false;
+        if (OperativeSampler.HostilePawns(pawn).Any(p => pawn.Position.DistanceTo(p.Position) <= 8f)) return false;
+        Start(pawn, MakeTendSelf(pawn), state);
+        pawn.jobs.jobQueue.EnqueueLast(MakeHold());
+        return true;
     }
 
     /// <summary>Stand and shoot whatever comes into view; keeps vanilla movement AI from taking over between orders.</summary>

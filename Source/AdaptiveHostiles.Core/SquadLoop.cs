@@ -30,7 +30,7 @@ public sealed class SquadLoop
     private readonly Dictionary<string, (SquadSnapshot Offered, long Tick)> _pending = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (SquadPhase Phase, int GatherCycles, int BreachCycles)> _phase = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StallTracker> _stall = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, HashSet<string>> _withdrawn = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, long>> _withdrawn = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _gatherStart = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _callStart = new(StringComparer.Ordinal);
     private readonly List<double> _latencyMs = new();
@@ -120,7 +120,7 @@ public sealed class SquadLoop
         {
             var id = member.Snapshot.PawnId;
             if (!decision.Members.TryGetValue(id, out var memberDecision)) continue; // beyond the cap: vanilla AI
-            memberDecision = KeepWithdrawn(squadId, member, memberDecision);
+            memberDecision = KeepWithdrawn(squadId, member, memberDecision, tick);
             var order = OperativeOrderResolver.Resolve(
                 memberDecision, member.Snapshot, host.CurrentMap(id), host.BlockOf(id),
                 member.IsOperative ? host.RecordOf(id) : null, tick, canFlee: !member.IsOperative);
@@ -170,18 +170,25 @@ public sealed class SquadLoop
         _latencyMs.Clear();
     }
 
-    // A raider that withdrew stays withdrawn until it has recovered, so a hurt melee raider does not walk back and forth.
-    private OperativeDecision KeepWithdrawn(string squadId, SquadMember member, OperativeDecision decision)
+    /// <summary>A withdrawn raider that is still bleeding or untreated stays out this long (game ticks) before it is released anyway.</summary>
+    public const long MaxTendWaitTicks = 3600;
+
+    // A raider that withdrew stays withdrawn until it has recovered and treated itself, so a hurt melee raider does not walk back
+    // and forth, and nobody goes back into the fight untreated. The wait for treatment is capped so a raider that cannot tend itself
+    // (no way to) is not held out forever.
+    private OperativeDecision KeepWithdrawn(string squadId, SquadMember member, OperativeDecision decision, long tick)
     {
-        if (!_withdrawn.TryGetValue(squadId, out var set)) _withdrawn[squadId] = set = new HashSet<string>(StringComparer.Ordinal);
+        if (!_withdrawn.TryGetValue(squadId, out var set)) _withdrawn[squadId] = set = new Dictionary<string, long>(StringComparer.Ordinal);
         var id = member.Snapshot.PawnId;
         if (decision.Stance is TacticalStance.Withdraw or TacticalStance.Flee)
         {
-            set.Add(id);
+            set.TryAdd(id, tick);
             return decision;
         }
-        if (!set.Contains(id)) return decision;
-        if (member.Snapshot.HealthFraction >= TacticalHeuristics.WithdrawUntil)
+        if (!set.TryGetValue(id, out var since)) return decision;
+        var healed = member.Snapshot.HealthFraction >= TacticalHeuristics.WithdrawUntil;
+        var treated = !member.Snapshot.NeedsTending || tick - since >= MaxTendWaitTicks;
+        if (healed && treated)
         {
             set.Remove(id);
             return decision;

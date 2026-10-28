@@ -104,7 +104,7 @@ public static class OperativeSampler
             self.ThingID, self.Position.x, self.Position.z,
             self.health.summaryHealth.SummaryHealthPercent,
             self.equipment?.Primary?.def.defName ?? "Unarmed",
-            allies, destinations, targets);
+            allies, destinations, targets, self.health.HasHediffsNeedingTend());
     }
 
     /// <summary>States the Operative must not be pulled out of.</summary>

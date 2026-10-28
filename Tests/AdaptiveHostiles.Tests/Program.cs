@@ -660,12 +660,12 @@ await Check("C5 intent log: one mod-log callout per phase change, never repeated
     var host = new FakeSquadHost { Snapshot = StagedSquad(arrived: false) };
     loop.Tick("s", host, 100, 1);
     loop.Tick("s", host, 1000, 1);
-    var gather = host.Callouts.Where(c => !c.StartsWith("sync:") && !c.StartsWith("flank")).ToList();
+    var gather = host.Callouts.Where(c => !c.StartsWith("sync:") && !c.StartsWith("flank") && !c.StartsWith("engagement:")).ToList();
     Require(gather.Count == 1 && gather[0].Contains("gathering") && gather[0].Contains("breach B1"), "gather callout missing or repeated");
     host.Snapshot = StagedSquad(arrived: true);
     loop.Tick("s", host, 2000, 1);
     loop.Tick("s", host, 3000, 1);
-    var intents = host.Callouts.Where(c => !c.StartsWith("sync:") && !c.StartsWith("flank")).ToList();
+    var intents = host.Callouts.Where(c => !c.StartsWith("sync:") && !c.StartsWith("flank") && !c.StartsWith("engagement:")).ToList();
     Require(intents.Count == 2 && intents[1].Contains("melee pushing") && host.Callouts.Any(c => c.StartsWith("sync:")), "breach callout missing or repeated");
     Require(IntentLog.Describe(SquadPhase.Press, new SquadDecision(SquadTactic.FocusFire, null, new Dictionary<string, OperativeDecision>(), false),
         host.Snapshot).Contains("no breach point"), "no-breach intent unclear");
@@ -905,6 +905,13 @@ await Check("kite: a ranged raider steps outside the colonists' weapon range, in
     var squad = new SquadSnapshot("s", new[] { m }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
     var d = await new SquadPlanner().DecideAsync(squad);
     Require(d.Members["r1"].DestinationId == "out" && d.Members["r1"].Kite && d.Members["r1"].TargetId == "c1", "planner did not turn the kite into an order");
+    // Jev can go all in: no kite order then.
+    var allIn = new FakeClient("""{"answers":{"tactic":{"type":"choice","choice":"suppress_push"},"focus":{"type":"choice","choice":"none"},"breach":{"type":"choice","choice":"B1"},"phase":{"type":"choice","choice":"breach"},"engagement":{"type":"choice","choice":"all_in"}}}""");
+    var ai = await new SquadPlanner(allIn).DecideAsync(squad);
+    Require(ai.AllIn && !ai.Members["r1"].Kite, "all-in squad still kited");
+    Require(allIn.LastQuestions!.ContainsKey("engagement"), "engagement question not asked");
+    var kiteAns = new FakeClient("""{"answers":{"tactic":{"type":"choice","choice":"suppress_push"},"focus":{"type":"choice","choice":"none"},"breach":{"type":"choice","choice":"B1"},"phase":{"type":"choice","choice":"breach"},"engagement":{"type":"choice","choice":"kite"}}}""");
+    Require((await new SquadPlanner(kiteAns).DecideAsync(squad)).Members["r1"].Kite, "kite answer ignored");
 });
 
 await Check("targets: a badly hurt enemy is finished before the focus target", async () =>

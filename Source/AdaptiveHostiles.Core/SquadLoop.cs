@@ -165,6 +165,12 @@ public sealed class SquadLoop
                 }
             }
         }
+        if (offered.Members.Any(m => !m.IsMelee) && offered.Targets.Any(t => t.Kind != "turret"))
+        {
+            var engage = $"engagement: ranged {(decision.AllIn ? "all in (no kiting)" : "kiting when outranged")}";
+            if (!_sync.TryGetValue(squadId + "/engage", out var lastEngage) || lastEngage != engage)
+            { _sync[squadId + "/engage"] = engage; host.Callout(engage); }
+        }
         if (decision.Phase == SquadPhase.Gather) _gatherStart.TryAdd(squadId, tick); else _gatherStart.Remove(squadId);
         var gather = decision.Phase == SquadPhase.Gather ? prior.GatherCycles + 1 : 0;
         var breach = decision.Phase == SquadPhase.Gather ? 0 : prior.BreachCycles + 1;

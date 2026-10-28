@@ -49,7 +49,7 @@ public sealed record SquadDecision(
     SquadTactic Tactic, string? FocusTargetId,
     IReadOnlyDictionary<string, OperativeDecision> Members, bool IsModelDecision,
     string? BreachId = null, SquadPhase Phase = SquadPhase.Breach,
-    RangedRole RangedRole = RangedRole.Cover, bool MeleeHold = false, int FlankSize = 0);
+    RangedRole RangedRole = RangedRole.Cover, bool MeleeHold = false, int FlankSize = 0, bool AllIn = false);
 
 /// <summary>
 /// One model call per squad per cycle. Jev sees every member's exact candidate cells and answers a
@@ -177,6 +177,20 @@ public sealed class SquadPlanner(IJevClient? client = null)
             };
         }
 
+        if (members.Any(m => !m.Member.IsMelee) && squad.Targets.Any(t => t.Kind != "turret"))
+        {
+            questions["engagement"] = new
+            {
+                type = "choice",
+                instructions = "How should the ranged raiders fight the defenders they can see? Outranging them wins fights cheaply when the raiders' guns reach farther than the colonists'. Going all in costs lives but ends the fight: choose it when the defence is nearly broken, the raid is about to be overrun, or kiting would only drag out a fight the raiders are winning anyway.",
+                criteria = new Dictionary<string, string>
+                {
+                    ["kite"] = "Ranged raiders step back out of the colonists' weapon range, staying inside their own, whenever a colonist's weapon reaches them.",
+                    ["all_in"] = "Ranged raiders stand and shoot or press forward; no stepping back. Use this to finish a weakened defence."
+                }
+            };
+        }
+
         for (var i = 0; i < members.Count; i++)
         {
             var m = members[i];
@@ -254,6 +268,9 @@ public sealed class SquadPlanner(IJevClient? client = null)
             var holdAnswer = JevAnswers.Choice(root, "melee_push");
             var hold = holdAnswer is null ? SquadCoordination.LocalHoldForCover(coordination) : holdAnswer == "hold_for_cover";
 
+            // No answer keeps the default: the ranged kite.
+            var allIn = JevAnswers.Choice(root, "engagement") == "all_in";
+
             var decisions = new Dictionary<string, OperativeDecision>(StringComparer.Ordinal);
             var taken = new HashSet<string>(StringComparer.Ordinal);
             for (var i = 0; i < members.Count; i++)
@@ -276,7 +293,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 if (!valid && chosen.DestinationId != "hold") taken.Add(chosen.DestinationId);
                 decisions[id] = chosen;
             }
-            return new SquadDecision(tactic, focusId, decisions, true, breachId, phase, rangedRole, hold, flankSize);
+            return new SquadDecision(tactic, focusId, decisions, true, breachId, phase, rangedRole, hold, flankSize, allIn);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return fallback; }
         catch (HttpRequestException) { return fallback; }
@@ -335,7 +352,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
         {
             if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
             // Outranging beats standing and trading shots: step to a cell outside the enemies' weapon range but inside our own.
-            if (SquadCoordination.KiteCell(m) is { } kite)
+            if (!decision.AllIn && SquadCoordination.KiteCell(m) is { } kite)
             {
                 var nearest = m.Snapshot.Targets.Where(t => t.Visible && t.Kind != "turret")
                     .OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).First();

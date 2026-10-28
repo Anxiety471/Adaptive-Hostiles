@@ -18,6 +18,7 @@ public static class SquadDriver
     /// <summary>While colonists stand out in the open the breach is re-planned this often, so the squad follows them.</summary>
     private const int ExposedReplanTicks = 300;
     private const int ExposedCheckTicks = 120;
+    private static readonly HashSet<string> CommandedRaids = new();
     private static readonly Dictionary<string, (int Tick, List<Pawn> Exposed)> ExposedMemory = new();
     private static readonly Dictionary<string, (int Tick, List<BreachPoint> Points, int Vision)> BreachMemory = new();
     /// <summary>Where raiders went down, shared by every raid until the game is reloaded.</summary>
@@ -74,6 +75,7 @@ public static class SquadDriver
         Controlled.Clear();
         BreachMemory.Clear();
         ExposedMemory.Clear();
+        CommandedRaids.Clear();
         Watches.Clear();
         Danger.Clear();
         BreachFinder.ResetPins();
@@ -91,7 +93,9 @@ public static class SquadDriver
             var members = raid.Raiders
                 .Where(p => p is { Spawned: true, Dead: false } && p.Faction != null && p.HostileTo(Faction.OfPlayer))
                 .Cast<Pawn>().ToList();
-            if (!members.Any(p => registry.TryGet(p.ThingID, out _))) continue;
+            // A raid is the squad's once it has had an Operative; it stays so after the Operative dies, or the raid goes back to vanilla AI and its exit.
+            if (members.Any(p => registry.TryGet(p.ThingID, out _))) CommandedRaids.Add(raid.Id);
+            if (!CommandedRaids.Contains(raid.Id)) continue;
             foreach (var p in members) Controlled[p.ThingID] = raid.StartTick;
 
             if (!Timings.TryGetValue(raid.Id, out var timing))
@@ -197,6 +201,8 @@ public static class SquadDriver
                 Log.Message($"[Adaptive Hostiles] raid {raid.Id}: no order this cycle for " + string.Join(", ", unordered));
             var ready = ordered.OrderByDescending(x => x.IsOp).ThenBy(x => x.Pawn.thingIDNumber).Take(SquadPlanner.MaxMembers)
                 .Select(x => (x.Pawn, x.IsOp, x.Dist)).ToList();
+
+            if (ready.Count == 0) return new SquadSnapshot(raid.Id, new List<SquadMember>(), sent, down, retreated);
 
             // Where the colony is weakest, found once for the whole squad from the lead raider's map view.
             var lead = ready.OrderBy(x => x.Dist).First().Pawn;

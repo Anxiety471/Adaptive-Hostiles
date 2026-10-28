@@ -187,8 +187,6 @@ public static class OperativeJobExecutor
             pick = OperativeSampler.HostilePawns(pawn).Take(6).FirstOrDefault(p => CanAttackFromHere(pawn, p)) as Thing
                    ?? OperativeSampler.HostileTurrets(pawn).Take(4).FirstOrDefault(t => CanAttackFromHere(pawn, t));
         }
-        // Nothing live to fight: finish off a downed colonist instead of walking past it.
-        pick ??= DownedExecution.Pick(pawn);
         if (pick is null) return false;
 
         var cur = pawn.CurJob;
@@ -198,17 +196,6 @@ public static class OperativeJobExecutor
         Start(pawn, MakeAttack(pawn, pick), state);
         pawn.jobs.jobQueue.EnqueueLast(MakeHold());
         return true;
-    }
-
-    /// <summary>Starts an attack on a target outside the squad's orders (mopping up downed colonists), then waits in combat.</summary>
-    public static void AttackNow(Pawn pawn, Thing target, OperativeRuntimeState state)
-    {
-        var cur = pawn.CurJob;
-        if (cur != null && (cur.def == JobDefOf.AttackStatic || cur.def == JobDefOf.AttackMelee) && cur.targetA.Thing == target) return;
-        state.Target = target;
-        state.Destination = null;
-        Start(pawn, MakeAttack(pawn, target), state);
-        pawn.jobs.jobQueue.EnqueueLast(MakeHold());
     }
 
     private static bool MeleeCanGo(Pawn pawn, Thing? target) =>

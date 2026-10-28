@@ -15,6 +15,9 @@ namespace AdaptiveHostiles.Mod.Tactics;
 public static class SquadDriver
 {
     private const int BreachKeepTicks = 6000;
+    /// <summary>While colonists stand out in the open the breach is re-planned this often, so the squad follows them.</summary>
+    private const int ExposedReplanTicks = 300;
+    private static readonly Dictionary<string, bool> ExposedMemory = new();
     private static readonly Dictionary<string, (int Tick, List<BreachPoint> Points, int Vision)> BreachMemory = new();
     /// <summary>Where raiders went down, shared by every raid until the game is reloaded.</summary>
     private static readonly DangerMemory Danger = new();
@@ -69,6 +72,7 @@ public static class SquadDriver
         Timings.Clear();
         Controlled.Clear();
         BreachMemory.Clear();
+        ExposedMemory.Clear();
         Watches.Clear();
         Danger.Clear();
         BreachFinder.ResetPins();
@@ -207,9 +211,13 @@ public static class SquadDriver
             var lostNew = RecordLosses(watch, now);
             // Jev's picture reading is cached and fetched in the background; a new reading re-plans the breach once.
             var visionWall = BaseVisionService.WeakWall(lead.Map);
+            // Colonists out in the open (no roof over them) are the squad's first target: the plan follows them out of the base.
+            var exposed = defenders.Where(c => !c.Position.Roofed(c.Map)).ToList();
+            var wasExposed = ExposedMemory.TryGetValue(raid.Id, out var before) && before;
+            ExposedMemory[raid.Id] = exposed.Count > 0;
             if (!BreachMemory.TryGetValue(raid.Id, out var kept) || now - kept.Tick > BreachKeepTicks || kept.Points.Count == 0 || lostNew || WallFell(kept.Points, lead.Map) ||
-                kept.Vision != BaseVisionService.Version)
-                BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre, Danger, now, visionWall), BaseVisionService.Version);
+                kept.Vision != BaseVisionService.Version || (exposed.Count > 0 && (!wasExposed || now - kept.Tick >= ExposedReplanTicks)) || (exposed.Count == 0 && wasExposed))
+                BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre, Danger, now, visionWall, exposed), BaseVisionService.Version);
             var breaches = kept.Points;
             if (kept.Tick == now)
                 Log.Message($"[Adaptive Hostiles] breach points for raid {raid.Id}: " + string.Join("; ", breaches.Select(b =>

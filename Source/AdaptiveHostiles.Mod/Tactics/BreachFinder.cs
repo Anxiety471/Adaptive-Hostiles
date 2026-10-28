@@ -31,11 +31,16 @@ public static class BreachFinder
     /// </summary>
     public static List<BreachPoint> Find(
         Pawn reference, RimWorldTacticalMap map, IReadOnlyList<Pawn> defenders,
-        IReadOnlyList<Building_Turret> turrets, IntVec3 centre, DangerMemory danger, long now, IntVec3? visionWall = null)
+        IReadOnlyList<Building_Turret> turrets, IntVec3 centre, DangerMemory danger, long now, IntVec3? visionWall = null,
+        IReadOnlyList<Pawn>? exposed = null)
     {
         var candidates = new List<BreachPoint>();
         if (!centre.IsValid) return candidates;
-        var targets = defenders.Cast<Thing>().Take(MaxPathTargets).Concat(turrets.Take(MaxPathTargets));
+        // Colonists in the open come first: nothing stands between them and the raiders, so they are the best point to attack.
+        var open = exposed ?? Array.Empty<Pawn>();
+        var targets = open.Cast<Thing>().Take(MaxPathTargets)
+            .Concat(defenders.Where(d => !open.Contains(d)).Cast<Thing>().Take(MaxPathTargets))
+            .Concat(turrets.Take(MaxPathTargets));
         foreach (var target in targets)
         {
             var cells = WallBreaker.PathCells(reference, target);
@@ -54,6 +59,8 @@ public static class BreachFinder
             var covered = turrets.Count(t => cell.DistanceTo(t.Position) <= OperativeSampler.TurretRange(t) + 1f);
             var fell = danger.Penalty(s.StandX, s.StandZ, now);
             var weakness = BreachRoute.Weakness(sees, covered, fell);
+            // An open way to a colonist outside the walls outranks every wall: no digging, and the colonist is cut off from the base.
+            if (target is Pawn p && open.Contains(p) && s.WallX < 0) weakness += 1f;
             candidates.Add(new BreachPoint("", s.StandX, s.StandZ, weakness, sees, covered, s.WallX, s.WallZ, fell));
         }
         if (visionWall is { } hinted && VisionCandidate(reference, map, hinted) is { } extra)

@@ -230,7 +230,9 @@ public sealed class SquadLoop
 
         // The game state decides whether a flank is possible; the model decides how many raiders go (see Finish).
         FlankOffer? flank = null;
-        if (!_split.ContainsKey(squadId) && known && phase != SquadPhase.Gather)
+        // Offered from the first cycle after the squad is known, gathering included: later the opening may already be breached
+        // and only one breach point is left, so the flank group has to take its own staging cell from the start.
+        if (!_split.ContainsKey(squadId) && known)
             flank = SquadSplit.Offer(members, snapshot.Breaches, main.Id, snapshot.Defenders);
         if (_split.TryGetValue(squadId, out var group) && snapshot.Breaches.FirstOrDefault(b => Key(b) == group.BreachKey) is { } gb)
             members = members.Select(m => group.PawnIds.Contains(m.Snapshot.PawnId) ? m with { GroupBreachId = gb.Id } : m).ToList();

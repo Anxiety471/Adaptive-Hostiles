@@ -958,6 +958,16 @@ await Check("enemies: a mech in sight is fought on sight by ranged and melee rai
     Require(d.Members["r1"].TargetId == "mech1" && d.Members["r1"].Stance == TacticalStance.Aggressive, "ranged ignored a mech in sight");
 });
 
+await Check("equal range: a ranged raider that cannot outrange takes cover at the edge of its range instead of trading shots in the open", async () =>
+{
+    MovementCandidate C(string id, int x, int z, float exposure) => new(id, x, z, 0.5f, exposure, 10, "cover", true);
+    var raider = new OperativeSnapshot("r1", 100, 90, 1f, "x", 2, new[] { C("open", 101, 90, 0.8f), C("rock", 96, 92, 0.1f), C("far", 70, 90, 0.1f) },
+        new[] { new TargetCandidate("c1", 130, 90, 0.9f, true, "pawn", 36.9f) }, false, 36.9f);
+    var squad = new SquadSnapshot("s", new[] { new SquadMember(raider, false, false) }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach, LockedAllIn: true);
+    var d = (await new SquadPlanner().DecideAsync(squad)).Members["r1"];
+    Require(d.DestinationId == "rock" && d.TargetId == "c1", $"expected cover at the edge, got {d.DestinationId}");
+});
+
 await Check("open colonist: ranged raiders spread over several sectors around it even when they can see it", async () =>
 {
     MovementCandidate C(string id, int x, int z) => new(id, x, z, 0.5f, 0.2f, 10, "firing_position", true);

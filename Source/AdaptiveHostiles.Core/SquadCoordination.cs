@@ -205,6 +205,44 @@ public static class SquadCoordination
             .ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault();
     }
 
+    /// <summary>A cover spot for a ranged raider that cannot outrange its enemies must be at most this exposed.</summary>
+    public const float CoverEdgeMaxExposure = 0.35f;
+
+    /// <summary>
+    /// A ranged raider that cannot outrange what it sees (an enemy's reach equals or exceeds its own, or no back-off cell exists) does not
+    /// stand in the open trading shots: it takes the least exposed cover cell within a short walk that still has an enemy inside its own
+    /// weapon range, preferring the cell farthest from the enemies, i.e. at the edge of its range. A raider that already stands on such a cell holds.
+    /// Raiders on a breach or press cell, behind a shield belt, kiting, withdrawing, or with a turret to fight keep their orders.
+    /// </summary>
+    public static SquadDecision CoverEdge(SquadDecision decision, SquadSnapshot squad)
+    {
+        if (SquadCommitment.Losing(squad)) return decision;
+        var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        foreach (var m in squad.Members.Where(CarriesRangedWeapon))
+        {
+            if (m.Snapshot.HasShield || !members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Kite || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+            var purpose = m.Snapshot.Destinations.FirstOrDefault(c => c.Id == d.DestinationId)?.Purpose ?? "";
+            if (purpose.StartsWith("breach_", StringComparison.Ordinal) || purpose.StartsWith("press_", StringComparison.Ordinal)) continue;
+            var threats = m.Snapshot.Targets.Where(t => t.Visible && t.Kind != "turret").ToList();
+            if (threats.Count == 0 || m.Snapshot.Targets.Any(t => t.Visible && t.Kind == "turret")) continue;
+            var mine = m.Snapshot.WeaponRange > 0 ? m.Snapshot.WeaponRange : 20f;
+            double Nearest(int x, int z) => threats.Min(t => Math.Sqrt(Math.Pow(x - t.X, 2) + Math.Pow(z - t.Z, 2)));
+            var nearest = threats.OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).First();
+            // Only a raider that cannot step out of reach: some enemy has at least its own reach.
+            if (!threats.Any(t => (t.Range > 2f ? t.Range : MeleeReach) >= mine)) continue;
+            if (Nearest(m.Snapshot.X, m.Snapshot.Z) > mine) continue;
+            var cell = m.Snapshot.Destinations
+                .Where(c => c.Reachable && !c.InTurretRange && c.Purpose is "cover" or "firing_position" && c.Exposure <= CoverEdgeMaxExposure &&
+                            Math.Sqrt(Math.Pow(c.X - m.Snapshot.X, 2) + Math.Pow(c.Z - m.Snapshot.Z, 2)) <= KiteMaxMove && Nearest(c.X, c.Z) <= mine * 0.95)
+                .OrderBy(c => c.Exposure).ThenByDescending(c => Math.Min(Nearest(c.X, c.Z), mine))
+                .ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault();
+            if (cell is null) continue;
+            var onIt = Math.Sqrt(Math.Pow(cell.X - m.Snapshot.X, 2) + Math.Pow(cell.Z - m.Snapshot.Z, 2)) <= 1.5;
+            members[m.Snapshot.PawnId] = d with { DestinationId = onIt ? "hold" : cell.Id, TargetId = nearest.Id, Stance = TacticalStance.Aggressive };
+        }
+        return decision with { Members = members };
+    }
+
     /// <summary>
     /// The raider already outranges every enemy it sees: outside all their weapon reach and with one of them inside its own range.
     /// It then stays and shoots; any other order (advance, press, hop, support) would walk it back into their range just to kite out again.

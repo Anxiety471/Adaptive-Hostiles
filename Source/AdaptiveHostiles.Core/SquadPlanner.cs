@@ -85,7 +85,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
             .OrderByDescending(m => m.IsOperative)
             .Take(MaxMembers)
             .Select(m => new Entry(m, m.Snapshot.Destinations
-                .Where(c => c.Reachable && c.Id != "hold" && !string.IsNullOrWhiteSpace(c.Id))
+                .Where(c => c.Reachable && c.Id != "hold" && c.Purpose != "kite" && !string.IsNullOrWhiteSpace(c.Id))
                 .GroupBy(c => c.Id, StringComparer.Ordinal).Select(g => g.First())
                 .Take(MaxDestinationsPerMember).ToDictionary(c => c.Id, StringComparer.Ordinal)))
             .ToList();

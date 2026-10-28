@@ -102,6 +102,9 @@ public static class OperativeSampler
                 armed + closeness * 0.5f, true, "pawn", WeaponReach(p), p.health.summaryHealth.SummaryHealthPercent));
         }
 
+        // Kite spots are searched on their own, not left to the coarse grid: inside buildings the grid cells are mostly walls.
+        destinations = destinations.Concat(KiteCandidates(self, map, range, targets)).ToList();
+
         var allies = self.Map.mapPawns.AllPawnsSpawned.Count(p =>
             p != self && !p.Dead && !p.Downed && p.Faction == self.Faction &&
             p.Position.InHorDistOf(self.Position, AllyRadius));
@@ -112,6 +115,40 @@ public static class OperativeSampler
             self.equipment?.Primary?.def.defName ?? "Unarmed",
             allies, destinations, targets, self.health.HasHediffsNeedingTend(), range,
             self.apparel?.WornApparel.Any(a => a.def.defName.Contains("ShieldBelt")) == true);
+    }
+
+    private const float KiteMargin = 1.5f;
+
+    /// <summary>
+    /// Cells a ranged raider could step to so it ends outside every visible enemy's weapon range: a ring search up to half its own
+    /// range out (4 to 12 cells), reachable and standable, outside turret range, at least a cell safer than where it stands. The best
+    /// few by margin. Empty when it is not threatened or has no ranged weapon.
+    /// </summary>
+    private static List<MovementCandidate> KiteCandidates(Pawn self, RimWorldTacticalMap map, float range, List<TargetCandidate> targets)
+    {
+        var result = new List<MovementCandidate>();
+        if (range <= 2.5f || self.equipment?.Primary is not { } w || w.def.IsMeleeWeapon) return result;
+        var threats = targets.Where(t => t.Visible && t.Kind != "turret").Select(t => (t.X, t.Z, Reach: t.Range > 2f ? t.Range : 3f)).ToList();
+        if (threats.Count == 0) return result;
+        double Margin(int x, int z) => threats.Min(t => Math.Sqrt(Math.Pow(x - t.X, 2) + Math.Pow(z - t.Z, 2)) - t.Reach);
+        var here = Margin(self.Position.x, self.Position.z);
+        if (here > KiteMargin) return result;
+
+        var move = Math.Clamp(range * 0.5f, 4f, 12f);
+        var found = new List<(double Margin, MovementCandidate C)>();
+        for (var r = 3f; r <= move; r += 3f)
+        for (var a = 0; a < 360; a += 30)
+        {
+            var x = self.Position.x + (int)Math.Round(r * Math.Cos(a * Math.PI / 180));
+            var z = self.Position.z + (int)Math.Round(r * Math.Sin(a * Math.PI / 180));
+            if (!new IntVec3(x, 0, z).InBounds(self.Map) || !map.IsStandable(x, z) || !map.IsReachable(x, z) || map.InTurretRange(x, z)) continue;
+            var margin = Margin(x, z);
+            if (margin <= here + 1) continue;
+            found.Add((margin, new MovementCandidate($"kite_{x}_{z}", x, z, map.CoverAt(x, z), map.ExposureAt(x, z),
+                (float)new IntVec3(x, 0, z).DistanceTo(self.Position), "kite", true)));
+        }
+        return found.OrderByDescending(f => Math.Min(f.Margin, KiteMargin * 3)).ThenBy(f => f.C.Distance).ThenBy(f => f.C.Id, StringComparer.Ordinal)
+            .Take(6).Select(f => f.C).ToList();
     }
 
     /// <summary>States the Operative must not be pulled out of.</summary>

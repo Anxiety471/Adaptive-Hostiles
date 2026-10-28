@@ -913,6 +913,9 @@ await Check("kite: a ranged raider steps outside the colonists' weapon range, in
     // A squad with no melee raiders gives the ranged ones the melee role; they still kite.
     var pushing = new SquadSnapshot("s", new[] { new SquadMember(m.Snapshot, false, true) }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
     Require((await new SquadPlanner().DecideAsync(pushing)).Members["r1"].Kite, "ranged raider holding the melee role did not kite");
+    // The dedicated kite cells (found by the game layer, e.g. inside buildings) are used, and are not offered to Jev as plain moves.
+    var inside = Raider(20, C("kite_88_90", "kite", 88, 90));
+    Require(SquadCoordination.KiteCell(inside)?.Id == "kite_88_90", "kite purpose cell not used");
     // A shield belt wearer does not back off from ranged fire.
     Require(SquadCoordination.KiteCell(new SquadMember(m.Snapshot with { HasShield = true }, false, false)) is null, "a shield-belt raider kited");
     // Jev can go all in: no kite order then.

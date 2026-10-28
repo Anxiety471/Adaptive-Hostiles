@@ -195,7 +195,7 @@ public static class SquadCoordination
 
         var move = Math.Clamp(mine * 0.5f, KiteMinMove, KiteMaxMove);
         return m.Snapshot.Destinations
-            .Where(c => c.Reachable && !c.InTurretRange && c.Purpose is "cover" or "firing_position" or "retreat" &&
+            .Where(c => c.Reachable && !c.InTurretRange && c.Purpose is "kite" or "cover" or "firing_position" or "retreat" &&
                         Math.Sqrt(Math.Pow(c.X - m.Snapshot.X, 2) + Math.Pow(c.Z - m.Snapshot.Z, 2)) <= move &&
                         Nearest(c.X, c.Z) <= mine && Margin(c.X, c.Z) > here + 1)
             .OrderByDescending(c => Math.Min(Margin(c.X, c.Z), KiteMargin * 3))

@@ -117,20 +117,28 @@ public static class SquadSplit
     /// <summary>A quarter of the squad, at least <see cref="MinGroup"/> and at most <see cref="MaxGroup"/>.</summary>
     public static int GroupSizeFor(int raiders) => Math.Clamp(raiders / 4, MinGroup, MaxGroup);
 
+    /// <summary>The flank the game state allows, if any; the model only picks the size within it.</summary>
+    public static FlankOffer? Offer(
+        IReadOnlyList<SquadMember> members, IReadOnlyList<BreachPoint> breaches, string mainBreachId, int defenders)
+    {
+        if (Choose(members, breaches, mainBreachId, defenders) is not { } pick) return null;
+        return new FlankOffer(pick.BreachId, MinGroup, Math.Clamp(members.Count / 2, MinGroup, MaxGroup));
+    }
+
     /// <summary>
     /// The raiders to send and the breach point they take: the weakest point other than the main one. Needs 6+ raiders, a second
     /// breach point and no more defenders than raiders (the main group must still be able to hold their attention). The
     /// Operative stays with the main group; the flank group has at least one melee raider and one ranged raider when possible.
     /// </summary>
     public static (IReadOnlyList<string> PawnIds, string BreachId)? Choose(
-        IReadOnlyList<SquadMember> members, IReadOnlyList<BreachPoint> breaches, string mainBreachId, int defenders)
+        IReadOnlyList<SquadMember> members, IReadOnlyList<BreachPoint> breaches, string mainBreachId, int defenders, int? groupSize = null)
     {
         if (members.Count < MinRaiders || defenders > members.Count) return null;
         var other = breaches.Where(b => b.Id != mainBreachId)
             .OrderByDescending(b => b.Weakness).ThenBy(b => b.Id, StringComparer.Ordinal).FirstOrDefault();
         if (other is null) return null;
 
-        var size = GroupSizeFor(members.Count);
+        var size = Math.Clamp(groupSize ?? GroupSizeFor(members.Count), MinGroup, MaxGroup);
         var pool = members.Where(m => !m.IsOperative).ToList();
         var group = new List<SquadMember>();
         var melee = pool.LastOrDefault(m => m.IsMelee);

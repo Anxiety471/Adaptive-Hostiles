@@ -126,6 +126,12 @@ public sealed class SquadLoop
                 member.IsOperative ? host.RecordOf(id) : null, tick, canFlee: !member.IsOperative);
             host.Apply(id, order);
         }
+        if (decision.FlankSize > 0 && offered.Flank is not null && decision.BreachId is not null && !_split.ContainsKey(squadId) &&
+            SquadSplit.Choose(offered.Members, offered.Breaches, decision.BreachId, offered.Defenders, decision.FlankSize) is { } split)
+        {
+            _split[squadId] = (split.PawnIds, BreachKey(offered.Breaches.First(b => b.Id == split.BreachId)));
+            host.Callout($"{split.PawnIds.Count} raiders split off to breach {split.BreachId} to find an opening while the rest keep the defenders busy");
+        }
         _phase.TryGetValue(squadId, out var prior);
         if (decision.BreachId is not null) _chosen[squadId] = decision.BreachId;
         if (!_phase.ContainsKey(squadId) || prior.Phase != decision.Phase)
@@ -197,12 +203,14 @@ public sealed class SquadLoop
         return decision with { DestinationId = safe?.Id ?? "hold", Stance = TacticalStance.Withdraw };
     }
 
+    private static string BreachKey(BreachPoint b) => $"{b.X},{b.Z}";
+
     // Stall replanning, the second breach group and ranged opening a wall, applied to the sampled snapshot.
     private SquadSnapshot Tactics(string squadId, ISquadHost host, SquadSnapshot snapshot, bool known, SquadPhase phase)
     {
         if (snapshot.Breaches.Count == 0) return snapshot;
         if (!_stall.TryGetValue(squadId, out var stall)) _stall[squadId] = stall = new StallTracker();
-        static string Key(BreachPoint b) => $"{b.X},{b.Z}";
+        static string Key(BreachPoint b) => BreachKey(b);
         var keys = snapshot.Breaches.Select(Key).ToList();
 
         if (known && phase != SquadPhase.Gather && _chosen.TryGetValue(squadId, out var chosenId) &&
@@ -220,12 +228,10 @@ public sealed class SquadLoop
         var members = snapshot.Members;
         var main = points.OrderByDescending(b => b.Weakness).ThenBy(b => b.Id, StringComparer.Ordinal).First();
 
-        if (!_split.ContainsKey(squadId) && known && phase != SquadPhase.Gather &&
-            SquadSplit.Choose(members, snapshot.Breaches, main.Id, snapshot.Defenders) is { } split)
-        {
-            _split[squadId] = (split.PawnIds, Key(snapshot.Breaches.First(b => b.Id == split.BreachId)));
-            host.Callout($"{split.PawnIds.Count} raiders split off to breach {split.BreachId}; defence is thin");
-        }
+        // The game state decides whether a flank is possible; the model decides how many raiders go (see Finish).
+        FlankOffer? flank = null;
+        if (!_split.ContainsKey(squadId) && known && phase != SquadPhase.Gather)
+            flank = SquadSplit.Offer(members, snapshot.Breaches, main.Id, snapshot.Defenders);
         if (_split.TryGetValue(squadId, out var group) && snapshot.Breaches.FirstOrDefault(b => Key(b) == group.BreachKey) is { } gb)
             members = members.Select(m => group.PawnIds.Contains(m.Snapshot.PawnId) ? m with { GroupBreachId = gb.Id } : m).ToList();
 
@@ -239,6 +245,6 @@ public sealed class SquadLoop
                 members = members.Select(m => !m.IsMelee && m.GroupBreachId is null
                     ? m with { IsMelee = true, GroupBreachId = other.Id } : m).ToList();
         }
-        return snapshot with { BreachPoints = points, Members = members };
+        return snapshot with { BreachPoints = points, Members = members, Flank = flank };
     }
 }

@@ -1198,6 +1198,19 @@ await Check("a withdrawn raider stays out until it has treated its wounds, with 
     return Task.CompletedTask;
 });
 
+await Check("flank: the game state offers it, the model picks how many raiders go", async () =>
+{
+    var squad = BreachSquad() with { Flank = new FlankOffer("B2", 2, 4), Defenders = 3 };
+    string Answer(string flank) => "{\"answers\":{\"tactic\":{\"type\":\"choice\",\"choice\":\"focus_fire\"},\"focus\":{\"type\":\"choice\",\"choice\":\"none\"},\"breach\":{\"type\":\"choice\",\"choice\":\"B1\"},\"flank\":{\"type\":\"choice\",\"choice\":\"" + flank + "\"}}}";
+    var three = new FakeClient(Answer("flank_3"));
+    Require((await new SquadPlanner(three).DecideAsync(squad)).FlankSize == 3, "model flank size ignored");
+    Require(three.LastQuestions!.ContainsKey("flank"), "flank question not asked");
+    Require((await new SquadPlanner(new FakeClient(Answer("no_flank"))).DecideAsync(squad)).FlankSize == 0, "no_flank still split");
+    Require((await new SquadPlanner(new FakeClient(Answer("flank_9"))).DecideAsync(squad)).FlankSize is >= 2 and <= 4, "invalid size not replaced by the default");
+    var none = new FakeClient(Answer("flank_3"));
+    Require((await new SquadPlanner(none).DecideAsync(BreachSquad())).FlankSize == 0 && !none.LastQuestions!.ContainsKey("flank"), "flank asked although the game state does not allow it");
+});
+
 Console.WriteLine($"Tests: {passed} passed, {failed} failed");
 Environment.ExitCode = failed == 0 ? 0 : 1;
 

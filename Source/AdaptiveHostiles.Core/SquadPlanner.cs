@@ -19,11 +19,17 @@ public sealed record SquadMember(
 public sealed record BreachPoint(
     string Id, int X, int Z, float Weakness, int Defenders, int Turrets, int WallX = -1, int WallZ = -1, float Danger = 0f);
 
+/// <summary>
+/// A flank the game state allows: a second breach point, enough raiders and a defence the main group can still pin. Jev only
+/// chooses how many raiders go (between <see cref="MinSize"/> and <see cref="MaxSize"/>), or none.
+/// </summary>
+public sealed record FlankOffer(string BreachId, int MinSize, int MaxSize);
+
 public sealed record SquadSnapshot(
     string SquadId, IReadOnlyList<SquadMember> Members, int Sent, int Down, int Retreated,
     IReadOnlyList<BreachPoint>? BreachPoints = null,
     SquadPhase PreviousPhase = SquadPhase.Gather, int GatherCycles = 0, int BreachCycles = 0,
-    IReadOnlyList<DangerZone>? DangerZones = null, double DamageDealt = 0, int Defenders = 0)
+    IReadOnlyList<DangerZone>? DangerZones = null, double DamageDealt = 0, int Defenders = 0, FlankOffer? Flank = null)
 {
     public IReadOnlyList<BreachPoint> Breaches => BreachPoints ?? Array.Empty<BreachPoint>();
 
@@ -43,7 +49,7 @@ public sealed record SquadDecision(
     SquadTactic Tactic, string? FocusTargetId,
     IReadOnlyDictionary<string, OperativeDecision> Members, bool IsModelDecision,
     string? BreachId = null, SquadPhase Phase = SquadPhase.Breach,
-    RangedRole RangedRole = RangedRole.Cover, bool MeleeHold = false);
+    RangedRole RangedRole = RangedRole.Cover, bool MeleeHold = false, int FlankSize = 0);
 
 /// <summary>
 /// One model call per squad per cycle. Jev sees every member's exact candidate cells and answers a
@@ -130,6 +136,22 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 }
             };
 
+        if (squad.Flank is { } offer)
+        {
+            var flankOptions = new Dictionary<string, string>
+            {
+                ["no_flank"] = "Keep the whole squad together on the main breach point."
+            };
+            for (var n = offer.MinSize; n <= offer.MaxSize; n++)
+                flankOptions[$"flank_{n}"] = $"{n} raiders break off and enter at the other breach point ({offer.BreachId}) while the rest keep the defenders' attention at the main one.";
+            questions["flank"] = new
+            {
+                type = "choice",
+                instructions = $"Part of the squad could circle to a second opening ({offer.BreachId}) and kill the colonists from there while the others keep the defenders busy. How many raiders should go? Use `breachPoints` and `defenders` to see how well the colony covers each opening; a small group is enough when the other opening is weakly defended.",
+                criteria = flankOptions
+            };
+        }
+
         var coordination = SquadCoordination.Measure(squad, fallback.BreachId);
         if (squad.Breaches.Count > 0 && coordination.HasBoth)
         {
@@ -187,6 +209,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
             {
                 squad.Sent, squad.Down, squad.Retreated,
                 breachPoints = squad.Breaches,
+                defenders = squad.Defenders,
                 coordination,
                 dangerZones = squad.DangerZones ?? Array.Empty<DangerZone>(),
                 members = members.Select((m, i) => new
@@ -225,6 +248,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 _ => SquadPhase.Breach
             };
             var focusId = focus == "none" ? null : focus;
+            var flankSize = squad.Flank is { } fo ? ParseFlank(JevAnswers.Choice(root, "flank"), fo) : 0;
             var rangedRole = JevAnswers.Choice(root, "ranged_role") == "follow_through" ? RangedRole.Follow : RangedRole.Cover;
             // No answer (no melee or no ranged raiders to coordinate) falls back to the local timing rule.
             var holdAnswer = JevAnswers.Choice(root, "melee_push");
@@ -252,11 +276,20 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 if (!valid && chosen.DestinationId != "hold") taken.Add(chosen.DestinationId);
                 decisions[id] = chosen;
             }
-            return new SquadDecision(tactic, focusId, decisions, true, breachId, phase, rangedRole, hold);
+            return new SquadDecision(tactic, focusId, decisions, true, breachId, phase, rangedRole, hold, flankSize);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return fallback; }
         catch (HttpRequestException) { return fallback; }
         catch (JsonException) { return fallback; }
+    }
+
+    /// <summary>The model's flank size; no valid answer takes the default group size for the squad.</summary>
+    private static int ParseFlank(string? answer, FlankOffer offer)
+    {
+        if (answer == "no_flank") return 0;
+        if (answer is not null && answer.StartsWith("flank_", StringComparison.Ordinal) &&
+            int.TryParse(answer.AsSpan(6), out var n) && n >= offer.MinSize && n <= offer.MaxSize) return n;
+        return Math.Clamp(SquadSplit.GroupSizeFor(offer.MaxSize * 4), offer.MinSize, offer.MaxSize);
     }
 
     private static TacticalStance? ParseStance(string? s, bool isOperative) => s switch
@@ -455,7 +488,8 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 breachId: Effective(m.Member, breach), isMelee: m.Member.IsMelee, preferTurrets: !m.Member.IsMelee);
         }
         return new SquadDecision(SquadTactic.FocusFire, focus, decisions, false, breach,
-            MeleeHold: SquadCoordination.LocalHoldForCover(SquadCoordination.Measure(squad, breach)));
+            MeleeHold: SquadCoordination.LocalHoldForCover(SquadCoordination.Measure(squad, breach)),
+            FlankSize: squad.Flank is { } offer ? Math.Clamp(SquadSplit.GroupSizeFor(squad.Members.Count), offer.MinSize, offer.MaxSize) : 0);
     }
 
     private static string? Effective(SquadMember m, string? mainBreachId) => m.GroupBreachId ?? mainBreachId;

@@ -35,6 +35,8 @@ public static class OperativeJobExecutor
         if (order.Kind == OrderKind.MoveTo)
         {
             var dest = new IntVec3(order.X, 0, order.Z);
+            // A turret that is about to blow up: get out of the blast first, then carry on.
+            if (EvadeBlast(pawn, state)) return;
             // Like a drafted colonist: anything in weapon range is attacked where the raider stands, the order's cell comes after.
             if (order.Stance != TacticalStance.Withdraw && EngageInRange(pawn, target, state)) return;
             // A melee raider that can reach an enemy goes for it; the ordered target may be far off or walled in.
@@ -208,6 +210,41 @@ public static class OperativeJobExecutor
         Start(pawn, MakeAttack(pawn, pick), state);
         pawn.jobs.jobQueue.EnqueueLast(MakeHold());
         return true;
+    }
+
+    private const float BlastMargin = 2f;
+
+    /// <summary>
+    /// A hostile turret with a lit wick (a self-destructing one) will explode; a raider inside its blast radius walks to the nearest
+    /// cell outside it, when one can be reached. Once the turret is gone the raider's order carries on as before.
+    /// </summary>
+    private static bool EvadeBlast(Pawn pawn, OperativeRuntimeState state)
+    {
+        foreach (var turret in OperativeSampler.HostileTurrets(pawn))
+        {
+            var bomb = turret.GetComp<CompExplosive>();
+            if (bomb is null || !bomb.wickStarted) continue;
+            var radius = bomb.ExplosiveRadius() + BlastMargin;
+            var away = pawn.Position - turret.Position;
+            var dist = away.LengthHorizontal;
+            if (dist > radius) continue;
+            var scale = dist < 0.5f ? 0f : radius / dist;
+            var spot = turret.Position + new IntVec3(UnityEngine.Mathf.RoundToInt(away.x * scale), 0, UnityEngine.Mathf.RoundToInt(away.z * scale));
+            var cell = GenRadial.RadialCellsAround(spot, 3f, true)
+                .Where(c => c.InBounds(pawn.Map) && c.Standable(pawn.Map) && c.DistanceTo(turret.Position) > radius &&
+                            pawn.CanReach(c, PathEndMode.OnCell, Danger.Deadly))
+                .OrderBy(c => c.DistanceToSquared(pawn.Position)).Cast<IntVec3?>().FirstOrDefault();
+            if (cell is null) continue;
+            if (state.Destination == cell.Value && pawn.CurJob == state.Job) return true;
+            var go = JobMaker.MakeJob(JobDefOf.Goto, cell.Value);
+            go.locomotionUrgency = LocomotionUrgency.Sprint;
+            Start(pawn, go, state);
+            state.Destination = cell.Value;
+            pawn.jobs.jobQueue.EnqueueLast(MakeHold());
+            Log.Message($"[Adaptive Hostiles] {pawn.LabelShort} backs out of the blast of {turret.LabelShort} at ({turret.Position.x},{turret.Position.z}).");
+            return true;
+        }
+        return false;
     }
 
     private static bool MeleeCanGo(Pawn pawn, Thing? target) =>

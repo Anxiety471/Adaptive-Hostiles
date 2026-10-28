@@ -175,6 +175,9 @@ public static class SquadCoordination
     /// within its own, a few cells away (up to half its range, 4 to 12 cells). Null when nothing is gained: it is already outside
     /// every enemy's reach, an enemy outranges it, or no offered cell is safer than where it stands.
     /// </summary>
+    public static bool CarriesRangedWeapon(SquadMember m) =>
+        m.Snapshot.WeaponRange > 2.5f || (m.Snapshot.WeaponRange <= 0f && !m.IsMelee);
+
     public static MovementCandidate? KiteCell(SquadMember m)
     {
         var mine = m.Snapshot.WeaponRange > 0 ? m.Snapshot.WeaponRange : 20f;

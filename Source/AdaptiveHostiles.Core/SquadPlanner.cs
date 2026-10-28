@@ -348,17 +348,21 @@ public sealed class SquadPlanner(IJevClient? client = null)
     {
         var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
         var state = SquadCoordination.Measure(squad, decision.BreachId);
+        // Outranging beats standing and trading shots: step to a cell outside the enemies' weapon range but inside our own.
+        // Whoever carries a ranged weapon kites, even in a squad with no melee raiders where they hold the melee role.
+        if (!decision.AllIn)
+            foreach (var m in squad.Members.Where(SquadCoordination.CarriesRangedWeapon))
+            {
+                if (!members.TryGetValue(m.Snapshot.PawnId, out var kd) || kd.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+                if (SquadCoordination.KiteCell(m) is not { } kite) continue;
+                var nearest = m.Snapshot.Targets.Where(t => t.Visible && t.Kind != "turret")
+                    .OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).First();
+                members[m.Snapshot.PawnId] = kd with { DestinationId = kite.Id, TargetId = nearest.Id, Stance = TacticalStance.Aggressive, Kite = true };
+            }
         foreach (var m in squad.Members.Where(m => !m.IsMelee))
         {
             if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
-            // Outranging beats standing and trading shots: step to a cell outside the enemies' weapon range but inside our own.
-            if (!decision.AllIn && SquadCoordination.KiteCell(m) is { } kite)
-            {
-                var nearest = m.Snapshot.Targets.Where(t => t.Visible && t.Kind != "turret")
-                    .OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).First();
-                members[m.Snapshot.PawnId] = d with { DestinationId = kite.Id, TargetId = nearest.Id, Stance = TacticalStance.Aggressive, Kite = true };
-                continue;
-            }
+            if (d.Kite) continue; // already kiting this cycle
             var close = m.Snapshot.Targets.Where(t => t.Visible && Dist(m, t.X, t.Z) <= PointBlank)
                 .OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).FirstOrDefault();
             if (close is not null)

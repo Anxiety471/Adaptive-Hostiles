@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Ranged raiders spread around a colonist in the open from several angles, even when they can see it.
 - Every raid is commanded by the squad from its first tick; no Operative is needed.
 - Ranged raiders kite by weapon range, hold at outranging distance, and keep the kite/all-in choice for 30 seconds.
 - Melee attack colonists in the open instead of staging for the base; gathering ends when colonists stand in the open.

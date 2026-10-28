@@ -158,17 +158,7 @@ public static class SquadCoordination
             var cells = m.Snapshot.Destinations
                 .Where(c => c.Reachable && !c.InTurretRange && (c.Purpose == "firing_position" || c.Purpose == "advance")).ToList();
             if (cells.Count == 0) continue;
-            // Several angles: the cells around the enemy fall into sectors, and each raider takes a sector the others have not,
-            // starting from the one on its own side, at a stand-off distance inside its weapon range.
-            var stand = Math.Clamp((m.Snapshot.WeaponRange > 0 ? m.Snapshot.WeaponRange : 20f) * 0.6f, 6f, 18f);
-            int Sector(MovementCandidate c) => (int)((Math.Atan2(c.Z - near.Z, c.X - near.X) + Math.PI) / (2 * Math.PI / Sectors)) % Sectors;
-            var own = (int)((Math.Atan2(m.Snapshot.Z - near.Z, m.Snapshot.X - near.X) + Math.PI) / (2 * Math.PI / Sectors)) % Sectors;
-            var best = cells.GroupBy(Sector)
-                .OrderBy(g => sectorUse.GetValueOrDefault(g.Key))
-                .ThenBy(g => Math.Min((g.Key - own + Sectors) % Sectors, (own - g.Key + Sectors) % Sectors)).ThenBy(g => g.Key).First();
-            var pick = best.OrderBy(c => Math.Abs(Math.Sqrt((c.X - near.X) * (c.X - near.X) + (c.Z - near.Z) * (c.Z - near.Z)) - stand))
-                .ThenBy(c => c.Id, StringComparer.Ordinal).First();
-            sectorUse[best.Key] = sectorUse.GetValueOrDefault(best.Key) + 1;
+            var pick = AnglePick(m, near, cells, sectorUse);
             if (pick.Id == d.DestinationId) continue;
             members[m.Snapshot.PawnId] = d with { DestinationId = pick.Id, TargetId = near.Id, Stance = TacticalStance.Aggressive };
         }
@@ -228,6 +218,52 @@ public static class SquadCoordination
             .Select(t => (T: t, Reach: t.Range > 2f ? t.Range : MeleeReach, Dist: Math.Sqrt(Math.Pow(m.Snapshot.X - t.X, 2) + Math.Pow(m.Snapshot.Z - t.Z, 2)))).ToList();
         if (threats.Count == 0 || m.Snapshot.Targets.Any(t => t.Visible && t.Kind != "turret" && t.Range <= 0f) || threats.Any(e => e.Reach >= mine) || threats.Any(e => e.Dist - e.Reach <= KiteMargin)) return null;
         return threats.Where(e => e.Dist <= mine).OrderBy(e => e.Dist).ThenBy(e => e.T.Id, StringComparer.Ordinal).Select(e => e.T).FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Several angles: the cells around the enemy fall into sectors, and each raider takes a sector the others have not,
+    /// starting from the one on its own side, at a stand-off distance inside its weapon range.
+    /// </summary>
+    private static MovementCandidate AnglePick(SquadMember m, TargetCandidate near, List<MovementCandidate> cells, Dictionary<int, int> sectorUse)
+    {
+        var stand = StandOff(m);
+        int Sector(double x, double z) => (int)((Math.Atan2(z - near.Z, x - near.X) + Math.PI) / (2 * Math.PI / Sectors)) % Sectors;
+        var own = Sector(m.Snapshot.X, m.Snapshot.Z);
+        var best = cells.GroupBy(c => Sector(c.X, c.Z))
+            .OrderBy(g => sectorUse.GetValueOrDefault(g.Key))
+            .ThenBy(g => Math.Min((g.Key - own + Sectors) % Sectors, (own - g.Key + Sectors) % Sectors)).ThenBy(g => g.Key).First();
+        sectorUse[best.Key] = sectorUse.GetValueOrDefault(best.Key) + 1;
+        return best.OrderBy(c => Math.Abs(Math.Sqrt((c.X - near.X) * (c.X - near.X) + (c.Z - near.Z) * (c.Z - near.Z)) - stand))
+            .ThenBy(c => c.Id, StringComparer.Ordinal).First();
+    }
+
+    private static float StandOff(SquadMember m) => Math.Clamp((m.Snapshot.WeaponRange > 0 ? m.Snapshot.WeaponRange : 20f) * 0.6f, 6f, 18f);
+
+    /// <summary>
+    /// Colonists stand in the open (the game says so through <see cref="SquadSnapshot.Exposed"/>): ranged raiders that are still far
+    /// from the nearest of them do not all press the same breach cell from the side they walked in; they spread over the cells around it,
+    /// one sector each, and shoot from there. Raiders already at their stand-off distance, kiting or retreating ones, and a losing squad keep their orders.
+    /// </summary>
+    public static SquadDecision SurroundOpen(SquadDecision decision, SquadSnapshot squad)
+    {
+        if (squad.Exposed <= 0 || decision.Phase == SquadPhase.Gather || SquadCommitment.Losing(squad)) return decision;
+        var enemies = squad.Targets.Where(t => t.Kind == "pawn").ToList();
+        if (enemies.Count == 0) return decision;
+        var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        var sectorUse = new Dictionary<int, int>();
+        foreach (var m in squad.Members.Where(CarriesRangedWeapon).OrderBy(m => m.Snapshot.PawnId, StringComparer.Ordinal))
+        {
+            if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Kite || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+            var near = enemies.OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).First();
+            var dist = Dist(m, near.X, near.Z);
+            if (dist <= StandOff(m) * 1.3 || dist > OpenEngageWithin * 1.5) continue;
+            var cells = m.Snapshot.Destinations
+                .Where(c => c.Reachable && !c.InTurretRange && (c.Purpose == "firing_position" || c.Purpose == "advance")).ToList();
+            if (cells.Count == 0) continue;
+            var pick = AnglePick(m, near, cells, sectorUse);
+            members[m.Snapshot.PawnId] = d with { DestinationId = pick.Id, TargetId = near.Id, Stance = TacticalStance.Aggressive };
+        }
+        return decision with { Members = members };
     }
 
     /// <summary>A colonist in sight this close is attacked at once, whatever the plan for the base says.</summary>

@@ -30,7 +30,7 @@ public sealed record SquadSnapshot(
     IReadOnlyList<BreachPoint>? BreachPoints = null,
     SquadPhase PreviousPhase = SquadPhase.Gather, int GatherCycles = 0, int BreachCycles = 0,
     IReadOnlyList<DangerZone>? DangerZones = null, double DamageDealt = 0, int Defenders = 0, FlankOffer? Flank = null,
-    int Openings = -1, bool? LockedAllIn = null)
+    int Openings = -1, bool? LockedAllIn = null, int Exposed = 0)
 {
     public IReadOnlyList<BreachPoint> Breaches => BreachPoints ?? Array.Empty<BreachPoint>();
 
@@ -463,7 +463,8 @@ public sealed class SquadPlanner(IJevClient? client = null)
             if (cell is null || hurt || Math.Sqrt(dx * dx + dz * dz) <= StagedWithin) staged++;
         }
         var ready = squad.Members.Count == 0 || staged >= Math.Ceiling(squad.Members.Count * ReadyFraction)
-                    || squad.PreviousPhase != SquadPhase.Gather || squad.GatherCycles >= MaxGatherCycles;
+                    || squad.PreviousPhase != SquadPhase.Gather || squad.GatherCycles >= MaxGatherCycles
+                    || squad.Exposed > 0; // colonists standing in the open end the gathering
         var phase = ready ? (decision.Phase == SquadPhase.Gather ? SquadPhase.Breach : decision.Phase) : SquadPhase.Gather;
         if (phase != SquadPhase.Gather) return PressThrough(decision with { Phase = phase }, squad, breachId);
 

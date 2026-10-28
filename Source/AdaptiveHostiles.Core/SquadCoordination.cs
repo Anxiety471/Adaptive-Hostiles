@@ -131,6 +131,8 @@ public static class SquadCoordination
     private static bool Engaged(SquadMember m) =>
         m.Snapshot.Targets.Any(t => t.Visible && t.Kind != "turret" && Dist(m, t.X, t.Z) <= EngagedWithin);
 
+    private const int Sectors = 6;
+
     /// <summary>
     /// Ranged raiders do not wait outside while the melee fight inside: once the melee are through or engaged, a ranged raider that
     /// has nothing in sight moves to the firing or advance cell nearest the enemies the squad can see, so it goes in behind the
@@ -146,7 +148,7 @@ public static class SquadCoordination
         if (enemies.Count == 0) return decision;
 
         var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
-        var slot = 0;
+        var sectorUse = new Dictionary<int, int>();
         foreach (var m in squad.Members.Where(m => !m.IsMelee || (!state.HasBoth && CarriesRangedWeapon(m))))
         {
             if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
@@ -154,11 +156,20 @@ public static class SquadCoordination
             if (m.Snapshot.Targets.Any(t => t.Visible && t.Kind != "turret")) continue;
             var near = enemies.OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).First();
             var cells = m.Snapshot.Destinations
-                .Where(c => c.Reachable && !c.InTurretRange && (c.Purpose == "firing_position" || c.Purpose == "advance"))
-                .OrderBy(c => (c.X - near.X) * (c.X - near.X) + (c.Z - near.Z) * (c.Z - near.Z)).ThenBy(c => c.Id, StringComparer.Ordinal).ToList();
-            if (cells.Count == 0 || cells[0].Id == d.DestinationId) continue;
-            // Spread over the nearest few cells so the ranged do not stack on one.
-            var pick = cells[Math.Min(slot++ % 3, cells.Count - 1)];
+                .Where(c => c.Reachable && !c.InTurretRange && (c.Purpose == "firing_position" || c.Purpose == "advance")).ToList();
+            if (cells.Count == 0) continue;
+            // Several angles: the cells around the enemy fall into sectors, and each raider takes a sector the others have not,
+            // starting from the one on its own side, at a stand-off distance inside its weapon range.
+            var stand = Math.Clamp((m.Snapshot.WeaponRange > 0 ? m.Snapshot.WeaponRange : 20f) * 0.6f, 6f, 18f);
+            int Sector(MovementCandidate c) => (int)((Math.Atan2(c.Z - near.Z, c.X - near.X) + Math.PI) / (2 * Math.PI / Sectors)) % Sectors;
+            var own = (int)((Math.Atan2(m.Snapshot.Z - near.Z, m.Snapshot.X - near.X) + Math.PI) / (2 * Math.PI / Sectors)) % Sectors;
+            var best = cells.GroupBy(Sector)
+                .OrderBy(g => sectorUse.GetValueOrDefault(g.Key))
+                .ThenBy(g => Math.Min((g.Key - own + Sectors) % Sectors, (own - g.Key + Sectors) % Sectors)).ThenBy(g => g.Key).First();
+            var pick = best.OrderBy(c => Math.Abs(Math.Sqrt((c.X - near.X) * (c.X - near.X) + (c.Z - near.Z) * (c.Z - near.Z)) - stand))
+                .ThenBy(c => c.Id, StringComparer.Ordinal).First();
+            sectorUse[best.Key] = sectorUse.GetValueOrDefault(best.Key) + 1;
+            if (pick.Id == d.DestinationId) continue;
             members[m.Snapshot.PawnId] = d with { DestinationId = pick.Id, TargetId = near.Id, Stance = TacticalStance.Aggressive };
         }
         return decision with { Members = members };

@@ -277,7 +277,8 @@ public static class SquadDriver
             }
             return new SquadSnapshot(raid.Id, squad, sent, down, retreated, breaches,
                 DangerZones: Danger.Hotspots(now, 5), DamageDealt: MeasureDamage(watch, defenders, breaches), Defenders: defenders.Count,
-                Openings: OpeningsMemory.TryGetValue(raid.Id, out var openingCount) ? openingCount : -1);
+                Openings: OpeningsMemory.TryGetValue(raid.Id, out var openingCount) ? openingCount : -1,
+                Exposed: exposed.Count);
         }
 
         // A pinned breach whose wall or door has been destroyed is stale: the squad has to find the next one on the path.

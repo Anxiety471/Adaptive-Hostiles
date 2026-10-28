@@ -103,6 +103,7 @@ public static class OperativeJobExecutor
         if (pawn.CurJob?.def == JobDefOf.TendPatient) return true;
         if (!pawn.health.HasHediffsNeedingTend()) return false;
         if (OperativeSampler.HostilePawns(pawn).Any(p => pawn.Position.DistanceTo(p.Position) <= 8f)) return false;
+        Log.Message($"[Adaptive Hostiles] {pawn.LabelShort} withdrew and tends its own wounds at ({pawn.Position.x},{pawn.Position.z}).");
         Start(pawn, MakeTendSelf(pawn), state);
         pawn.jobs.jobQueue.EnqueueLast(MakeHold());
         return true;

@@ -13,7 +13,7 @@ public sealed class ModSettingsData : ModSettings
     public string OpenAiBaseUrl = "";
     public string Model = "";
     /// <summary>Game ticks between squad decisions (60 = about one second).</summary>
-    public int SquadInterval = 60;
+    public int SquadInterval = 120;
     /// <summary>Jev reads a picture of the base to pick the weakest wall; on unless switched off.</summary>
     public bool BaseImages = true;
 
@@ -25,7 +25,8 @@ public sealed class ModSettingsData : ModSettings
         Scribe_Values.Look(ref OpenAiKey, "openAiKey", "");
         Scribe_Values.Look(ref OpenAiBaseUrl, "openAiBaseUrl", "");
         Scribe_Values.Look(ref Model, "model", "");
-        Scribe_Values.Look(ref SquadInterval, "squadInterval", 60);
+        // New key: the old "squadInterval" held the previous 60-tick default, which would have kept everyone on one second.
+        Scribe_Values.Look(ref SquadInterval, "squadIntervalV2", 120);
         Scribe_Values.Look(ref BaseImages, "baseImages", true);
     }
 

@@ -28,8 +28,8 @@ public static class SquadCoordination
     public const float InPositionWithin = 6f;
     /// <summary>Melee holding for cover stop this far short of the breach cell; closer than this they are committed and go on.</summary>
     public const float MeleeCommitWithin = 6f;
-    /// <summary>Melee hold for cover for at most this many breach cycles (about a second each); then they go regardless.</summary>
-    public const int MaxCoverWaitCycles = 12;
+    /// <summary>Melee hold for cover for at most this many breach cycles (about two seconds each, about 12 s); then they go regardless.</summary>
+    public const int MaxCoverWaitCycles = 6;
     /// <summary>A melee raider with an enemy pawn in sight this close is fighting and counts as through the opening.</summary>
     public const float EngagedWithin = 8f;
 

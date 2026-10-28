@@ -36,6 +36,8 @@ public static class RaidAdapter
     public static bool TryCompose(RaidScope scope, PawnGroupMakerParms groupParms, out List<Pawn> pawns)
     {
         pawns = new List<Pawn>();
+        // No decision model configured: the mod stays out of it and the raid is vanilla.
+        if (!JevPlanService.JevEnabled) return false;
         var faction = groupParms.faction;
         var map = scope.Map;
         var seed = SeedFor(map, faction);
@@ -43,7 +45,8 @@ public static class RaidAdapter
         var kinds = FactionRoster.Collect(faction);
         var colony = ColonySampler.Sample(map, faction);
         var plan = JevPlanService.GetPlan($"{faction.def.defName}:{map.uniqueID}", colony);
-        plan = plan with { IncludeOperative = RosterGenerator.RollElite(seed) < Settings.OperativeChance };
+        // No specialised Operative pawn for now: every raid is commanded by the squad.
+        plan = plan with { IncludeOperative = false };
 
         var roster = RosterGenerator.Generate(plan, FactionRoster.Classify(kinds), seed, Settings);
         if (roster.Bypassed)

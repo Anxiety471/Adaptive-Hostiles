@@ -15,7 +15,7 @@ public static class SettingsWindow
         ("jev", "TypeSafe Jev"),
         ("anthropic", "Anthropic (Claude)"),
         ("openai", "OpenAI-compatible (OpenAI, OpenRouter, local server)"),
-        ("local", "Local only (no online model)")
+        ("local", "Off (no online model: raids stay vanilla)")
     };
 
     public static void Draw(Rect inRect, ModSettingsData data)
@@ -23,7 +23,7 @@ public static class SettingsWindow
         var list = new Listing_Standard();
         list.Begin(inRect);
 
-        list.Label("Decision model for raids and Operatives. With no key, the mod uses its built-in local logic.");
+        list.Label("Decision model for raids. A key is required: with no key (or Off) the mod does nothing and raids stay vanilla.");
         var current = Array.Find(Providers, p => p.Value == data.Provider);
         if (current.Value is null) current = Providers[0];
         if (list.ButtonTextLabeled("Provider", current.Label))

@@ -99,9 +99,9 @@ public static class SquadDriver
                 .Where(p => p is { Spawned: true, Dead: false } && p.Faction != null && p.HostileTo(Faction.OfPlayer))
                 .Cast<Pawn>().ToList();
             if (ReleasedRaids.Contains(raid.Id)) continue;
-            // A raid is the squad's once it has had an Operative; it stays so after the Operative dies, or the raid goes back to vanilla AI and its exit.
-            if (members.Any(p => registry.TryGet(p.ThingID, out _))) CommandedRaids.Add(raid.Id);
-            if (!CommandedRaids.Contains(raid.Id)) continue;
+            // Every tracked raid is the squad's from its first tick; no Operative is needed. It stays so until no colonist is left.
+            if (members.Count == 0) continue;
+            CommandedRaids.Add(raid.Id);
             // No colonist left alive (downed ones count): nothing to command against. Let go for good, so the raid's own lord loots and leaves.
             if (members.Count > 0 && Watches.ContainsKey(raid.Id) && members[0].Map.mapPawns.FreeColonistsSpawned.Count == 0)
             {

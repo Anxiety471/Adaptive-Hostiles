@@ -57,7 +57,8 @@ public sealed record OperativeSnapshot(
     IReadOnlyList<MovementCandidate> Destinations,
     IReadOnlyList<TargetCandidate> Targets,
     bool NeedsTending = false,
-    float WeaponRange = 0f);
+    float WeaponRange = 0f,
+    bool HasShield = false);
 
 /// <summary>Flee leaves the map and is only ever available to ordinary raiders, never the Operative.</summary>
 public enum TacticalStance { Defensive, Aggressive, Withdraw, Flee }

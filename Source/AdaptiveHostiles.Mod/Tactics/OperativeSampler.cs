@@ -110,7 +110,8 @@ public static class OperativeSampler
             self.ThingID, self.Position.x, self.Position.z,
             self.health.summaryHealth.SummaryHealthPercent,
             self.equipment?.Primary?.def.defName ?? "Unarmed",
-            allies, destinations, targets, self.health.HasHediffsNeedingTend(), range);
+            allies, destinations, targets, self.health.HasHediffsNeedingTend(), range,
+            self.apparel?.WornApparel.Any(a => a is ShieldBelt) == true);
     }
 
     /// <summary>States the Operative must not be pulled out of.</summary>

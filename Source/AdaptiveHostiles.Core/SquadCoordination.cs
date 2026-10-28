@@ -180,6 +180,8 @@ public static class SquadCoordination
 
     public static MovementCandidate? KiteCell(SquadMember m)
     {
+        // A raider behind a shield belt shrugs off ranged fire: it presses in instead of backing off.
+        if (m.Snapshot.HasShield) return null;
         var mine = m.Snapshot.WeaponRange > 0 ? m.Snapshot.WeaponRange : 20f;
         var threats = m.Snapshot.Targets.Where(t => t.Visible && t.Kind != "turret")
             .Select(t => (T: t, Reach: t.Range > 2f ? t.Range : MeleeReach)).ToList();

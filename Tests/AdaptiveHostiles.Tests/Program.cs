@@ -913,6 +913,8 @@ await Check("kite: a ranged raider steps outside the colonists' weapon range, in
     // A squad with no melee raiders gives the ranged ones the melee role; they still kite.
     var pushing = new SquadSnapshot("s", new[] { new SquadMember(m.Snapshot, false, true) }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
     Require((await new SquadPlanner().DecideAsync(pushing)).Members["r1"].Kite, "ranged raider holding the melee role did not kite");
+    // A shield belt wearer does not back off from ranged fire.
+    Require(SquadCoordination.KiteCell(new SquadMember(m.Snapshot with { HasShield = true }, false, false)) is null, "a shield-belt raider kited");
     // Jev can go all in: no kite order then.
     var allIn = new FakeClient("""{"answers":{"tactic":{"type":"choice","choice":"suppress_push"},"focus":{"type":"choice","choice":"none"},"breach":{"type":"choice","choice":"B1"},"phase":{"type":"choice","choice":"breach"},"engagement":{"type":"choice","choice":"all_in"}}}""");
     var ai = await new SquadPlanner(allIn).DecideAsync(squad);

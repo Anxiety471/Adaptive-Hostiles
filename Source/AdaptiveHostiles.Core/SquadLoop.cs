@@ -59,6 +59,7 @@ public sealed class SquadLoop
         _stall.Remove(squadId);
         _chosen.Remove(squadId);
         _sync.Remove(squadId);
+        _sync.Remove(squadId + "/flank");
         _withdrawn.Remove(squadId);
         _split.Remove(squadId);
     }
@@ -125,6 +126,17 @@ public sealed class SquadLoop
                 memberDecision, member.Snapshot, host.CurrentMap(id), host.BlockOf(id),
                 member.IsOperative ? host.RecordOf(id) : null, tick, canFlee: !member.IsOperative);
             host.Apply(id, order);
+        }
+        if (offered.Flank is { } offer && !_split.ContainsKey(squadId))
+        {
+            // Logged on change only, so a run shows whether a flank was possible and what the model answered.
+            var line = $"flank offered at {offer.BreachId} for {offer.MinSize}-{offer.MaxSize} raiders; {(decision.FlankSize > 0 ? $"{decision.FlankSize} sent" : "none sent")}" +
+                       (decision.IsModelDecision ? "" : " (local default)");
+            if (!_sync.TryGetValue(squadId + "/flank", out var lastLine) || lastLine != line)
+            {
+                _sync[squadId + "/flank"] = line;
+                host.Callout(line);
+            }
         }
         if (decision.FlankSize > 0 && offered.Flank is not null && decision.BreachId is not null && !_split.ContainsKey(squadId) &&
             SquadSplit.Choose(offered.Members, offered.Breaches, decision.BreachId, offered.Defenders, decision.FlankSize) is { } split)

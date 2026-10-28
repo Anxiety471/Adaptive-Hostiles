@@ -60,6 +60,7 @@ public sealed class SquadLoop
         _chosen.Remove(squadId);
         _sync.Remove(squadId);
         _sync.Remove(squadId + "/flank");
+        _sync.Remove(squadId + "/check");
         _withdrawn.Remove(squadId);
         _split.Remove(squadId);
     }
@@ -246,6 +247,16 @@ public sealed class SquadLoop
         // and only one breach point is left, so the flank group has to take its own staging cell from the start.
         if (!_split.ContainsKey(squadId) && known)
             flank = SquadSplit.Offer(members, snapshot.Breaches, main.Id, snapshot.Defenders);
+        if (known && !_split.ContainsKey(squadId))
+        {
+            var why = $"flank check: {members.Count} raiders, {snapshot.Defenders} defenders, {snapshot.Breaches.Count} breach points (main {main.Id}), " +
+                      (flank is null ? "no flank possible" : $"flank possible at {flank.BreachId}");
+            if (!_sync.TryGetValue(squadId + "/check", out var lastCheck) || lastCheck != why)
+            {
+                _sync[squadId + "/check"] = why;
+                host.Callout(why);
+            }
+        }
         if (_split.TryGetValue(squadId, out var group) && snapshot.Breaches.FirstOrDefault(b => Key(b) == group.BreachKey) is { } gb)
             members = members.Select(m => group.PawnIds.Contains(m.Snapshot.PawnId) ? m with { GroupBreachId = gb.Id } : m).ToList();
 

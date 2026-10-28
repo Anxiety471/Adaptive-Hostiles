@@ -1211,6 +1211,25 @@ await Check("flank: the game state offers it, the model picks how many raiders g
     Require((await new SquadPlanner(none).DecideAsync(BreachSquad())).FlankSize == 0 && !none.LastQuestions!.ContainsKey("flank"), "flank asked although the game state does not allow it");
 });
 
+await Check("flank offer reaches the loop: 12 raiders, 8 defenders, 3 breach points", () =>
+{
+    MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
+    SquadMember M(int i, bool melee, bool op = false) => new(new OperativeSnapshot($"p{i}", 100 + i, 90, 1f, "x", 1,
+        new[] { C($"s1_{i}", "stage_B1", 100), C($"s2_{i}", "stage_B2", 101), C($"s3_{i}", "stage_B3", 102),
+                C($"b1_{i}", melee ? "breach_B1" : "support_B1", 130), C($"b2_{i}", melee ? "breach_B2" : "support_B2", 140),
+                C($"b3_{i}", melee ? "breach_B3" : "support_B3", 150) },
+        new[] { new TargetCandidate("c1", 150, 90, 0.8f, true) }), op, melee);
+    var members = Enumerable.Range(0, 12).Select(i => M(i, i < 6, i == 0)).ToList();
+    var snap = new SquadSnapshot("s", members, 12, 0, 0,
+        new[] { new BreachPoint("B1", 130, 90, 1f, 0, 0, 129, 90), new BreachPoint("B2", 140, 90, 1f, 0, 0, 139, 90), new BreachPoint("B3", 150, 90, 0.9f, 0, 0, 149, 90) },
+        Defenders: 8);
+    var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());
+    var host = new FakeSquadHost { Snapshot = snap };
+    for (var t = 0; t < 12; t++) loop.Tick("s", host, 600 + t * 300, 1);
+    Require(host.Callouts.Any(c => c.Contains("flank offered")), "no flank offered; callouts: " + string.Join(" | ", host.Callouts));
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"Tests: {passed} passed, {failed} failed");
 Environment.ExitCode = failed == 0 ? 0 : 1;
 

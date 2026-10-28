@@ -15,7 +15,7 @@ public sealed class AdaptiveHostilesMod : Verse.Mod
     /// <summary>Player-entered provider settings; read once when the decision client is created.</summary>
     public static ProviderSettings Providers { get; private set; } = new();
     /// <summary>Game ticks between squad decisions, from the mod settings page.</summary>
-    public static int SquadIntervalTicks { get; private set; } = 60;
+    public static int SquadIntervalTicks { get; private set; } = 120;
     /// <summary>Whether Jev reads a picture of the base (Jev provider only); the settings page is the off switch.</summary>
     public static bool BaseImagesEnabled { get; private set; } = true;
 

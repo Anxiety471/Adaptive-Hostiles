@@ -618,7 +618,9 @@ await Check("B3 split: 6+ raiders against a thin defence send one melee and one 
     Require(pick is { } p && p.BreachId == "B2" && p.PawnIds.Count == 2 && !p.PawnIds.Contains("op"), "wrong split");
     Require(pick!.Value.PawnIds.Contains("m2") && pick.Value.PawnIds.Contains("r3"), "group is not one melee and one ranged");
     Require(SquadSplit.Choose(six.Take(5).ToList(), pts, "B1", 2) is null, "split with fewer than 6 raiders");
-    Require(SquadSplit.Choose(six, pts, "B1", 4) is null, "split against a strong defence");
+    Require(SquadSplit.Choose(six, pts, "B1", 7) is null, "split against a defence larger than the squad");
+    Require(SquadSplit.GroupSizeFor(6) == 2 && SquadSplit.GroupSizeFor(12) == 3 && SquadSplit.GroupSizeFor(40) == 4, "flank group size");
+    Require(SquadSplit.Choose(six, pts, "B1", 6) is not null, "no flank against a defence as large as the squad");
     Require(SquadSplit.Choose(six, pts.Take(1).ToList(), "B1", 2) is null, "split with one breach point");
 
     var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());
@@ -658,11 +660,13 @@ await Check("C5 intent log: one mod-log callout per phase change, never repeated
     var host = new FakeSquadHost { Snapshot = StagedSquad(arrived: false) };
     loop.Tick("s", host, 100, 1);
     loop.Tick("s", host, 1000, 1);
-    Require(host.Callouts.Count == 1 && host.Callouts[0].Contains("gathering") && host.Callouts[0].Contains("breach B1"), "gather callout missing or repeated");
+    var gather = host.Callouts.Where(c => !c.StartsWith("sync:") && !c.StartsWith("flank") && !c.StartsWith("engagement:")).ToList();
+    Require(gather.Count == 1 && gather[0].Contains("gathering") && gather[0].Contains("breach B1"), "gather callout missing or repeated");
     host.Snapshot = StagedSquad(arrived: true);
     loop.Tick("s", host, 2000, 1);
     loop.Tick("s", host, 3000, 1);
-    Require(host.Callouts.Count == 2 && host.Callouts[1].Contains("melee pushing"), "breach callout missing or repeated");
+    var intents = host.Callouts.Where(c => !c.StartsWith("sync:") && !c.StartsWith("flank") && !c.StartsWith("engagement:")).ToList();
+    Require(intents.Count == 2 && intents[1].Contains("melee pushing") && host.Callouts.Any(c => c.StartsWith("sync:")), "breach callout missing or repeated");
     Require(IntentLog.Describe(SquadPhase.Press, new SquadDecision(SquadTactic.FocusFire, null, new Dictionary<string, OperativeDecision>(), false),
         host.Snapshot).Contains("no breach point"), "no-breach intent unclear");
     return Task.CompletedTask;
@@ -881,6 +885,93 @@ await Check("ranged: shoot point blank instead of kiting, and move up at an open
     Require(idle.Members["r1"].DestinationId == "r_p", "ranged idled at its support cell at an open breach");
     var walled = await new SquadPlanner().DecideAsync(Snap(130, new[] { new TargetCandidate("hidden", 160, 90, 0.9f, false) }, true));
     Require(walled.Members["r1"].DestinationId == "r_s", "ranged left its support cell at a walled breach");
+});
+
+await Check("kite: a ranged raider steps outside the colonists' weapon range, inside its own", async () =>
+{
+    MovementCandidate C(string id, string purpose, int x, int z) => new(id, x, z, 0.5f, 0.2f, 10, purpose, true);
+    SquadMember Raider(int enemyRange, params MovementCandidate[] cells) =>
+        new(new OperativeSnapshot("r1", 100, 90, 1f, "x", 2, cells,
+            new[] { new TargetCandidate("c1", 106, 90, 0.9f, true, "pawn", enemyRange) }, false, 30f), false, false);
+    // Colonist with a 20-cell rifle 6 cells away: the cell 18 cells off (and inside the raider's 30) outranges it.
+    var m = Raider(20, C("near", "cover", 98, 90), C("out", "firing_position", 88, 90), C("toward", "cover", 104, 90));
+    Require(SquadCoordination.KiteCell(m)?.Id == "out", "no outranging cell chosen for a shorter-range colonist");
+    // A colonist outranging us gives nothing to gain.
+    Require(SquadCoordination.KiteCell(Raider(35, C("out", "firing_position", 88, 90))) is null, "kited from an enemy that outranges it");
+    // Already outside the colonist's reach: stay and shoot.
+    var safe = new SquadMember(m.Snapshot with { X = 70, Z = 90, Targets = new[] { new TargetCandidate("c1", 100, 90, 0.9f, true, "pawn", 20f) } }, false, false);
+    Require(SquadCoordination.KiteCell(safe) is null, "kited while already outside the enemy's range");
+    // Once outranging, the raider holds and shoots; role, hop and press orders must not walk it back in.
+    var safeSquad = new SquadSnapshot("s", new[] { safe }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
+    var held = (await new SquadPlanner().DecideAsync(safeSquad)).Members["r1"];
+    Require(held.DestinationId == "hold" && held.Kite && held.TargetId == "c1", "outranging raider was sent back in instead of holding");
+    // Nobody in sight and no melee to wait for: the ranged raider looks for a firing angle toward the colonists.
+    var blind = new SquadMember(m.Snapshot with { Targets = new[] { new TargetCandidate("c1", 106, 90, 0.9f, false, "pawn", 20f) },
+        Destinations = new[] { C("angle", "firing_position", 104, 90), C("back", "cover", 90, 90) } }, false, false);
+    var seek = (await new SquadPlanner().DecideAsync(new SquadSnapshot("s", new[] { blind }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach))).Members["r1"];
+    Require(seek.DestinationId == "angle", "ranged raider with nobody in sight stood still instead of seeking an angle");
+    // Through the planner: the order carries the kite flag and the shot target.
+    var squad = new SquadSnapshot("s", new[] { m }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
+    var d = await new SquadPlanner().DecideAsync(squad);
+    Require(d.Members["r1"].DestinationId == "out" && d.Members["r1"].Kite && d.Members["r1"].TargetId == "c1", "planner did not turn the kite into an order");
+    // Melee raiders never kite: they keep swarming the colonists.
+    var meleeSnap = m.Snapshot with { PawnId = "m1", WeaponRange = 2f };
+    var mixed = new SquadSnapshot("s", new[] { new SquadMember(meleeSnap, false, true), m }, 2, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
+    var mixedDecision = await new SquadPlanner().DecideAsync(mixed);
+    Require(!mixedDecision.Members["m1"].Kite && mixedDecision.Members["r1"].Kite, "melee raider received a kite order");
+    // A squad with no melee raiders gives the ranged ones the melee role; they still kite.
+    var pushing = new SquadSnapshot("s", new[] { new SquadMember(m.Snapshot, false, true) }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
+    Require((await new SquadPlanner().DecideAsync(pushing)).Members["r1"].Kite, "ranged raider holding the melee role did not kite");
+    // The dedicated kite cells (found by the game layer, e.g. inside buildings) are used, and are not offered to Jev as plain moves.
+    var inside = Raider(20, C("kite_88_90", "kite", 88, 90));
+    Require(SquadCoordination.KiteCell(inside)?.Id == "kite_88_90", "kite purpose cell not used");
+    // A shield belt wearer does not back off from ranged fire.
+    Require(SquadCoordination.KiteCell(new SquadMember(m.Snapshot with { HasShield = true }, false, false)) is null, "a shield-belt raider kited");
+    // Jev can go all in: no kite order then.
+    var allIn = new FakeClient("""{"answers":{"tactic":{"type":"choice","choice":"suppress_push"},"focus":{"type":"choice","choice":"none"},"breach":{"type":"choice","choice":"B1"},"phase":{"type":"choice","choice":"breach"},"engagement":{"type":"choice","choice":"all_in"}}}""");
+    var ai = await new SquadPlanner(allIn).DecideAsync(squad);
+    Require(ai.AllIn && !ai.Members["r1"].Kite, "all-in squad still kited");
+    Require(allIn.LastQuestions!.ContainsKey("engagement"), "engagement question not asked");
+    var kiteAns = new FakeClient("""{"answers":{"tactic":{"type":"choice","choice":"suppress_push"},"focus":{"type":"choice","choice":"none"},"breach":{"type":"choice","choice":"B1"},"phase":{"type":"choice","choice":"breach"},"engagement":{"type":"choice","choice":"kite"}}}""");
+    Require((await new SquadPlanner(kiteAns).DecideAsync(squad)).Members["r1"].Kite, "kite answer ignored");
+});
+
+await Check("melee in the open: a colonist in sight is attacked instead of staging for the base", async () =>
+{
+    MovementCandidate C(string id, string purpose, int x, int z) => new(id, x, z, 0.5f, 0.2f, 10, purpose, true);
+    var melee = new OperativeSnapshot("m1", 100, 90, 1f, "x", 2, new[] { C("stage", "stage_B1", 130, 90), C("adv", "advance", 108, 90) },
+        new[] { new TargetCandidate("c1", 110, 90, 0.9f, true, "pawn", 20f) }, false, 2f);
+    var squad = new SquadSnapshot("s", new[] { new SquadMember(melee, false, true) }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Gather);
+    var d = (await new SquadPlanner().DecideAsync(squad)).Members["m1"];
+    Require(d.DestinationId == "adv" && d.TargetId == "c1" && d.Stance == TacticalStance.Aggressive, "melee walked to the base staging cell with a colonist in the open");
+});
+
+await Check("funnel: a building with one opening sends a small group through, the rest take their own spots", async () =>
+{
+    MovementCandidate C(string id, string purpose, int x, int z, float exposure = 0.2f) => new(id, x, z, 0.5f, exposure, 10, purpose, true);
+    SquadMember Mk(string id, bool melee, int x) => new(new OperativeSnapshot(id, x, 90, 1f, "x", 2, new[]
+    {
+        C($"{id}_b", "breach_B1", 140, 90), C($"{id}_s", "support_B1", 130, 92), C($"{id}_p", "press_B1", 150, 90), C($"{id}_st", "stage_B1", 100, 90),
+        C($"{id}_hide", "cover", x, 80, 0.05f), C($"{id}_seen", "cover", x, 100, 0.9f)
+    }, new[] { new TargetCandidate("c1", 160, 90, 0.9f, true) }, false, melee ? 2f : 30f), false, melee);
+    var members = new[] { Mk("m1", true, 125), Mk("m2", true, 120), Mk("m3", true, 115), Mk("m4", true, 110), Mk("r1", false, 124), Mk("r2", false, 105) };
+    SquadSnapshot Snap(int openings) => new("s", members, 6, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach, Openings: openings);
+    var one = await new SquadPlanner().DecideAsync(Snap(1));
+    Require(one.FunnelSize == SquadCoordination.FunnelDefault, "funnel size not applied to a one-opening building");
+    var holders = members.Where(m => one.Members[m.Snapshot.PawnId].DestinationId.EndsWith("_hide")).ToList();
+    Require(holders.Count == members.Length - SquadCoordination.FunnelDefault, $"expected {members.Length - SquadCoordination.FunnelDefault} raiders on their own spots, got {holders.Count}");
+    Require(holders.All(h => one.Members[h.Snapshot.PawnId].DestinationId == h.Snapshot.PawnId + "_hide"), "holders did not take the least exposed spot");
+    Require(one.Members["m1"].DestinationId != "m1_hide", "the raider nearest the opening was held back");
+    // several openings, or an unknown count: nobody is held back
+    var many = await new SquadPlanner().DecideAsync(Snap(3));
+    Require(many.FunnelSize == 0 && members.All(m => !many.Members[m.Snapshot.PawnId].DestinationId.EndsWith("_hide")), "funnel applied with several openings");
+    // Jev chooses the group size, or everyone
+    FakeClient Ans(string funnel) => new("{\"answers\":{\"tactic\":{\"type\":\"choice\",\"choice\":\"suppress_push\"},\"focus\":{\"type\":\"choice\",\"choice\":\"none\"},\"breach\":{\"type\":\"choice\",\"choice\":\"B1\"},\"phase\":{\"type\":\"choice\",\"choice\":\"breach\"},\"funnel\":{\"type\":\"choice\",\"choice\":\"" + funnel + "\"}}}");
+    var two = Ans("funnel_2");
+    var d2 = await new SquadPlanner(two).DecideAsync(Snap(1));
+    Require(two.LastQuestions!.ContainsKey("funnel") && d2.FunnelSize == 2, "funnel_2 not applied");
+    var all = await new SquadPlanner(Ans("funnel_all")).DecideAsync(Snap(1));
+    Require(members.All(m => !all.Members[m.Snapshot.PawnId].DestinationId.EndsWith("_hide")), "funnel_all still held raiders back");
 });
 
 await Check("targets: a badly hurt enemy is finished before the focus target", async () =>
@@ -1104,6 +1195,127 @@ await Check("a failed vision request backs off and later retries", async () =>
     Require(!scheduler.CanBegin("m"), "no back-off after a failure");
     now = now.AddMinutes(10);
     Require(scheduler.CanBegin("m"), "back-off never ends");
+});
+
+await Check("ranged/melee sync: melee hold for cover, ranged cover the melee and only follow once melee are through", async () =>
+{
+    MovementCandidate C(string id, string purpose, int x, int z = 90) => new(id, x, z, 0.5f, 0.2f, 10, purpose, true);
+    var near = new TargetCandidate("c_near", 150, 90, 0.8f, true);   // defender by the opening, close to the melee
+    var far = new TargetCandidate("c_far", 150, 110, 0.9f, true);    // higher threat, but away from the melee
+    SquadMember Melee(string id, int x) => new(new OperativeSnapshot(id, x, 90, 1f, "x", 1,
+        new[] { C($"{id}_b", "breach_B1", 130), C($"{id}_p", "press_B1", 134) }, new[] { near, far }), false, true);
+    SquadMember Ranged(string id, int x) => new(new OperativeSnapshot(id, x, 90, 1f, "x", 1,
+        new[] { C($"{id}_s", "support_B1", 128, 94), C($"{id}_p", "press_B1", 134) }, new[] { near, far }), false, false);
+    SquadSnapshot Snap(int breachCycles, params SquadMember[] ms) => new("s", ms, ms.Length, 0, 0,
+        new[] { new BreachPoint("B1", 130, 90, 0.9f, 0, 0) }, SquadPhase.Breach, 0, breachCycles);
+    var coverFire = new FakeClient("""{"answers":{"tactic":{"type":"choice","choice":"suppress_push"},"focus":{"type":"choice","choice":"none"},"breach":{"type":"choice","choice":"B1"},"phase":{"type":"choice","choice":"breach"},"melee_push":{"type":"choice","choice":"hold_for_cover"},"ranged_role":{"type":"choice","choice":"cover_fire"}}}""");
+
+    // melee 10 cells out, ranged still 30 cells away: melee hold, then go once the wait runs out
+    var wait = Snap(0, Melee("m1", 120), Ranged("r1", 98));
+    var held = await new SquadPlanner().DecideAsync(wait);
+    Require(held.Members["m1"].DestinationId == "hold" && held.Members["m1"].Stance == TacticalStance.Defensive, "melee dashed ahead of unready ranged");
+    var timeout = await new SquadPlanner().DecideAsync(Snap(SquadCoordination.MaxCoverWaitCycles, Melee("m1", 120), Ranged("r1", 98)));
+    Require(timeout.Members["m1"].DestinationId == "m1_b", "melee waited past the timeout");
+    // ranged already in position: no hold
+    var ready = await new SquadPlanner().DecideAsync(Snap(0, Melee("m1", 120), Ranged("r1", 128)));
+    Require(ready.Members["m1"].DestinationId != "hold", "melee held although the ranged were in position");
+    // a melee raider already at the opening is never held
+    var atGap = await new SquadPlanner().DecideAsync(Snap(0, Melee("m1", 129), Ranged("r1", 98)));
+    Require(atGap.Members["m1"].DestinationId != "hold", "committed melee was held");
+    // the model can say go even though the ranged are not ready
+    var go = new FakeClient("""{"answers":{"tactic":{"type":"choice","choice":"suppress_push"},"focus":{"type":"choice","choice":"none"},"breach":{"type":"choice","choice":"B1"},"phase":{"type":"choice","choice":"breach"},"melee_push":{"type":"choice","choice":"go_now"},"ranged_role":{"type":"choice","choice":"cover_fire"}}}""");
+    Require((await new SquadPlanner(go).DecideAsync(wait)).Members["m1"].DestinationId != "hold", "go_now was ignored");
+    Require(go.LastQuestions!.ContainsKey("melee_push") && go.LastQuestions.ContainsKey("ranged_role"), "coordination questions not asked");
+
+    // covering fire: ranged shoot the defender nearest the melee, not the highest threat
+    var cover = await new SquadPlanner(coverFire).DecideAsync(Snap(0, Melee("m1", 120), Ranged("r1", 128)));
+    Require(cover.Members["r1"].TargetId == "c_near", "ranged did not cover the melee");
+
+    // ranged do not run ahead: with the melee still out, even follow_through keeps ranged on the support cell
+    var follow = new FakeClient("""{"answers":{"tactic":{"type":"choice","choice":"suppress_push"},"focus":{"type":"choice","choice":"none"},"breach":{"type":"choice","choice":"B1"},"phase":{"type":"choice","choice":"breach"},"melee_push":{"type":"choice","choice":"go_now"},"ranged_role":{"type":"choice","choice":"follow_through"}}}""");
+    var early = await new SquadPlanner(follow).DecideAsync(Snap(0, Melee("m1", 118), Ranged("r1", 128)));
+    Require(early.Members["r1"].DestinationId != "r1_p", "ranged moved up ahead of the melee");
+    // melee through: follow_through moves ranged up even with a target in sight; cover_fire keeps them shooting
+    var through = Snap(0, Melee("m1", 134), Ranged("r1", 128));
+    Require((await new SquadPlanner(follow).DecideAsync(through)).Members["r1"].DestinationId == "r1_p", "ranged did not follow the melee through");
+    Require((await new SquadPlanner(coverFire).DecideAsync(through)).Members["r1"].DestinationId != "r1_p", "cover_fire ranged left their post with a target in sight");
+    // offline fallback keeps the same timing rule
+    Require((await new SquadPlanner().DecideAsync(wait)).Members["m1"].DestinationId == "hold", "offline melee did not wait for ranged");
+});
+
+await Check("ranged go in behind engaged melee at a sealed breach instead of waiting outside", async () =>
+{
+    MovementCandidate C(string id, string purpose, int x, int z) => new(id, x, z, 0.5f, 0.2f, 10, purpose, true);
+    var inside = new TargetCandidate("c1", 140, 90, 0.8f, true);
+    var melee = new SquadMember(new OperativeSnapshot("m1", 133, 90, 1f, "x", 1,
+        new[] { C("m1_b", "breach_B1", 130, 90) }, new[] { inside }), false, true);
+    var ranged = new SquadMember(new OperativeSnapshot("r1", 124, 94, 1f, "x", 1,
+        new[] { C("r1_s", "support_B1", 124, 94), C("r1_far", "advance", 110, 90), C("r1_in", "firing_position", 136, 91) }, System.Array.Empty<TargetCandidate>()), false, false);
+    SquadSnapshot Snap(params SquadMember[] ms) => new("s", ms, ms.Length, 0, 0,
+        new[] { new BreachPoint("B1", 130, 90, 0.5f, 1, 0, 128, 90) }, SquadPhase.Breach, 0, 1);
+    var d = await new SquadPlanner().DecideAsync(Snap(melee, ranged));
+    Require(d.Members["r1"].DestinationId == "r1_in", "ranged stayed outside while the melee fought");
+    // melee not engaged and far away: ranged keep their support cell
+    var farMelee = melee with { Snapshot = melee.Snapshot with { X = 100, Targets = System.Array.Empty<TargetCandidate>() } };
+    var d2 = await new SquadPlanner().DecideAsync(Snap(farMelee, ranged));
+    Require(d2.Members["r1"].DestinationId != "r1_in", "ranged went in before the melee were engaged");
+});
+
+await Check("a withdrawn raider stays out until it has treated its wounds, with a cap on the wait", () =>
+{
+    MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
+    SquadSnapshot Snap(float hp, bool needsTending) => new("s", new[] { new SquadMember(new OperativeSnapshot("r1", 120, 90, hp, "x", 1,
+        new[] { C("safe", "retreat", 60), C("push", "press_B1", 135) }, System.Array.Empty<TargetCandidate>(), needsTending), false, true) },
+        4, 0, 0, new[] { new BreachPoint("B1", 130, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
+    var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());
+    var host = new FakeSquadHost();
+    host.Snapshot = Snap(0.2f, true);           // hurt: withdraws
+    loop.Tick("s", host, 600, 1);
+    Require(host.Applied.Last().Order.Stance == TacticalStance.Withdraw, "hurt raider did not withdraw");
+    host.Snapshot = Snap(0.9f, true);           // healed enough but still untreated: stays out
+    loop.Tick("s", host, 2000, 1);
+    Require(host.Applied.Last().Order.Stance == TacticalStance.Withdraw, "untreated raider went back in");
+    host.Snapshot = Snap(0.9f, true);           // still untreated after the wait cap: released anyway
+    loop.Tick("s", host, 600 + (int)SquadLoop.MaxTendWaitTicks + 100, 1);
+    Require(host.Applied.Last().Order.Stance != TacticalStance.Withdraw, "untreated raider held out past the cap");
+    host.Snapshot = Snap(0.2f, true);
+    loop.Tick("s", host, 5000, 1);
+    host.Snapshot = Snap(0.9f, false);          // treated: released
+    loop.Tick("s", host, 9000, 1);
+    Require(host.Applied.Last().Order.Stance != TacticalStance.Withdraw, "treated raider stayed out");
+    return Task.CompletedTask;
+});
+
+await Check("flank: the game state offers it, the model picks how many raiders go", async () =>
+{
+    var squad = BreachSquad() with { Flank = new FlankOffer("B2", 2, 4), Defenders = 3 };
+    string Answer(string flank) => "{\"answers\":{\"tactic\":{\"type\":\"choice\",\"choice\":\"focus_fire\"},\"focus\":{\"type\":\"choice\",\"choice\":\"none\"},\"breach\":{\"type\":\"choice\",\"choice\":\"B1\"},\"flank\":{\"type\":\"choice\",\"choice\":\"" + flank + "\"}}}";
+    var three = new FakeClient(Answer("flank_3"));
+    Require((await new SquadPlanner(three).DecideAsync(squad)).FlankSize == 3, "model flank size ignored");
+    Require(three.LastQuestions!.ContainsKey("flank"), "flank question not asked");
+    Require((await new SquadPlanner(new FakeClient(Answer("no_flank"))).DecideAsync(squad)).FlankSize == 0, "no_flank still split");
+    Require((await new SquadPlanner(new FakeClient(Answer("flank_9"))).DecideAsync(squad)).FlankSize is >= 2 and <= 4, "invalid size not replaced by the default");
+    var none = new FakeClient(Answer("flank_3"));
+    Require((await new SquadPlanner(none).DecideAsync(BreachSquad())).FlankSize == 0 && !none.LastQuestions!.ContainsKey("flank"), "flank asked although the game state does not allow it");
+});
+
+await Check("flank offer reaches the loop: 12 raiders, 8 defenders, 3 breach points", () =>
+{
+    MovementCandidate C(string id, string purpose, int x) => new(id, x, 90, 0.5f, 0.2f, 10, purpose, true);
+    SquadMember M(int i, bool melee, bool op = false) => new(new OperativeSnapshot($"p{i}", 100 + i, 90, 1f, "x", 1,
+        new[] { C($"s1_{i}", "stage_B1", 100), C($"s2_{i}", "stage_B2", 101), C($"s3_{i}", "stage_B3", 102),
+                C($"b1_{i}", melee ? "breach_B1" : "support_B1", 130), C($"b2_{i}", melee ? "breach_B2" : "support_B2", 140),
+                C($"b3_{i}", melee ? "breach_B3" : "support_B3", 150) },
+        new[] { new TargetCandidate("c1", 150, 90, 0.8f, true) }), op, melee);
+    var members = Enumerable.Range(0, 12).Select(i => M(i, i < 6, i == 0)).ToList();
+    var snap = new SquadSnapshot("s", members, 12, 0, 0,
+        new[] { new BreachPoint("B1", 130, 90, 1f, 0, 0, 129, 90), new BreachPoint("B2", 140, 90, 1f, 0, 0, 139, 90), new BreachPoint("B3", 150, 90, 0.9f, 0, 0, 149, 90) },
+        Defenders: 8);
+    var loop = new SquadLoop(new SquadPlanner(), null, new AdaptiveHostilesSettings());
+    var host = new FakeSquadHost { Snapshot = snap };
+    for (var t = 0; t < 12; t++) loop.Tick("s", host, 600 + t * 300, 1);
+    Require(host.Callouts.Any(c => c.Contains("flank offered")), "no flank offered; callouts: " + string.Join(" | ", host.Callouts));
+    return Task.CompletedTask;
 });
 
 Console.WriteLine($"Tests: {passed} passed, {failed} failed");

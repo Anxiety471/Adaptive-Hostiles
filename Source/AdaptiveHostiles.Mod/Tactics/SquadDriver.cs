@@ -15,6 +15,14 @@ namespace AdaptiveHostiles.Mod.Tactics;
 public static class SquadDriver
 {
     private const int BreachKeepTicks = 6000;
+    /// <summary>While colonists stand out in the open the breach is re-planned this often, so the squad follows them.</summary>
+    private const int ExposedReplanTicks = 300;
+    private const int ExposedCheckTicks = 120;
+    private static readonly HashSet<string> CommandedRaids = new();
+    private static readonly Dictionary<string, int> OpeningsMemory = new();
+    /// <summary>Raids whose colonists are all dead: the squad lets go for good and vanilla AI (loot, leave) takes over.</summary>
+    private static readonly HashSet<string> ReleasedRaids = new();
+    private static readonly Dictionary<string, (int Tick, List<Pawn> Exposed)> ExposedMemory = new();
     private static readonly Dictionary<string, (int Tick, List<BreachPoint> Points, int Vision)> BreachMemory = new();
     /// <summary>Where raiders went down, shared by every raid until the game is reloaded.</summary>
     private static readonly DangerMemory Danger = new();
@@ -69,9 +77,14 @@ public static class SquadDriver
         Timings.Clear();
         Controlled.Clear();
         BreachMemory.Clear();
+        ExposedMemory.Clear();
+        CommandedRaids.Clear();
+        OpeningsMemory.Clear();
+        ReleasedRaids.Clear();
         Watches.Clear();
         Danger.Clear();
         BreachFinder.ResetPins();
+        DownedExecution.Reset();
     }
 
     public static void Tick(OperativeRegistry registry, IReadOnlyList<TrackedRaid> raids)
@@ -85,13 +98,27 @@ public static class SquadDriver
             var members = raid.Raiders
                 .Where(p => p is { Spawned: true, Dead: false } && p.Faction != null && p.HostileTo(Faction.OfPlayer))
                 .Cast<Pawn>().ToList();
-            if (!members.Any(p => registry.TryGet(p.ThingID, out _))) continue;
+            if (ReleasedRaids.Contains(raid.Id)) continue;
+            // Every tracked raid is the squad's from its first tick; no Operative is needed. It stays so until no colonist is left.
+            if (members.Count == 0) continue;
+            CommandedRaids.Add(raid.Id);
+            // No colonist left alive (downed ones count): nothing to command against. Let go for good, so the raid's own lord loots and leaves.
+            if (members.Count > 0 && Watches.ContainsKey(raid.Id) && members[0].Map.mapPawns.FreeColonistsSpawned.Count == 0)
+            {
+                ReleasedRaids.Add(raid.Id);
+                CommandedRaids.Remove(raid.Id);
+                foreach (var p in members) OperativeJobExecutor.Release(p, StateOf(p));
+                Loop.Forget(raid.Id);
+                Log.Message($"[Adaptive Hostiles] raid {raid.Id}: no colonists left, the squad lets go and vanilla AI takes over.");
+                continue;
+            }
             foreach (var p in members) Controlled[p.ThingID] = raid.StartTick;
 
             if (!Timings.TryGetValue(raid.Id, out var timing))
                 Timings[raid.Id] = timing = new OperativeRecord(raid.Id, "squad");
             try
             {
+                DownedExecution.Tick(members);
                 Loop.Tick(raid.Id, new Host(raid, members, registry, timing), tick, SeedFor(raid.Id));
             }
             catch (Exception e)
@@ -159,6 +186,8 @@ public static class SquadDriver
         {
             if (!byId.TryGetValue(pawnId, out var pawn)) return PawnBlock.Dead;
             var block = OperativeSampler.BlockFor(pawn);
+            // A raider on its way to execute a downed colonist is not given squad orders until it is done.
+            if (DownedExecution.IsExecuting(pawn.ThingID)) block |= PawnBlock.ScriptedDuty;
             var state = StateOf(pawn);
             if (state.Fleeing)
             {
@@ -189,6 +218,8 @@ public static class SquadDriver
             var ready = ordered.OrderByDescending(x => x.IsOp).ThenBy(x => x.Pawn.thingIDNumber).Take(SquadPlanner.MaxMembers)
                 .Select(x => (x.Pawn, x.IsOp, x.Dist)).ToList();
 
+            if (ready.Count == 0) return new SquadSnapshot(raid.Id, new List<SquadMember>(), sent, down, retreated);
+
             // Where the colony is weakest, found once for the whole squad from the lead raider's map view.
             var lead = ready.OrderBy(x => x.Dist).First().Pawn;
             var defenders = colony.OrderBy(c => c.Position.DistanceTo(lead.Position)).Take(16).ToList();
@@ -203,10 +234,21 @@ public static class SquadDriver
             var lostNew = RecordLosses(watch, now);
             // Jev's picture reading is cached and fetched in the background; a new reading re-plans the breach once.
             var visionWall = BaseVisionService.WeakWall(lead.Map);
+            // Colonists out in the open (nothing man-made between them and the raiders) are the squad's first target: the plan follows them out of the base.
+            var wasExposed = ExposedMemory.TryGetValue(raid.Id, out var before) && before.Exposed.Count > 0;
+            if (!ExposedMemory.ContainsKey(raid.Id) || now - ExposedMemory[raid.Id].Tick >= ExposedCheckTicks)
+                ExposedMemory[raid.Id] = (now, BreachFinder.ExposedColonists(lead, defenders));
+            var exposed = ExposedMemory[raid.Id].Exposed.Where(c => !c.Dead && !c.Downed && c.Spawned).ToList();
             if (!BreachMemory.TryGetValue(raid.Id, out var kept) || now - kept.Tick > BreachKeepTicks || kept.Points.Count == 0 || lostNew || WallFell(kept.Points, lead.Map) ||
-                kept.Vision != BaseVisionService.Version)
-                BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre, Danger, now, visionWall), BaseVisionService.Version);
+                kept.Vision != BaseVisionService.Version || (exposed.Count > 0 && (!wasExposed || now - kept.Tick >= ExposedReplanTicks)) || (exposed.Count == 0 && wasExposed))
+                BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre, Danger, now, visionWall, exposed), BaseVisionService.Version);
             var breaches = kept.Points;
+            if (kept.Tick == now)
+            {
+                var openings = BreachFinder.CountOpenings(lead.Map, centre);
+                OpeningsMemory[raid.Id] = openings;
+                Log.Message($"[Adaptive Hostiles] raid {raid.Id}: the colony's building has {openings} opening(s).");
+            }
             if (kept.Tick == now)
                 Log.Message($"[Adaptive Hostiles] breach points for raid {raid.Id}: " + string.Join("; ", breaches.Select(b =>
                     $"{b.Id} stand ({b.X},{b.Z}) {(b.WallX >= 0 ? $"wall ({b.WallX},{b.WallZ})" : "open")} weakness {b.Weakness:0.00}")));
@@ -234,7 +276,9 @@ public static class SquadDriver
                 squad.Add(new SquadMember(snap, isOp, melee));
             }
             return new SquadSnapshot(raid.Id, squad, sent, down, retreated, breaches,
-                DangerZones: Danger.Hotspots(now, 5), DamageDealt: MeasureDamage(watch, defenders, breaches), Defenders: defenders.Count);
+                DangerZones: Danger.Hotspots(now, 5), DamageDealt: MeasureDamage(watch, defenders, breaches), Defenders: defenders.Count,
+                Openings: OpeningsMemory.TryGetValue(raid.Id, out var openingCount) ? openingCount : -1,
+                Exposed: exposed.Count);
         }
 
         // A pinned breach whose wall or door has been destroyed is stale: the squad has to find the next one on the path.

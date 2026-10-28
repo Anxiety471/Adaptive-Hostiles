@@ -35,18 +35,22 @@ public static class OperativeJobExecutor
         if (order.Kind == OrderKind.MoveTo)
         {
             var dest = new IntVec3(order.X, 0, order.Z);
+            // A turret that is about to blow up: get out of the blast first, then carry on.
+            if (EvadeBlast(pawn, state)) return;
             // Like a drafted colonist: anything in weapon range is attacked where the raider stands, the order's cell comes after.
-            if (order.Stance != TacticalStance.Withdraw && EngageInRange(pawn, target, state)) return;
+            if (!order.Kite && order.Stance != TacticalStance.Withdraw && EngageInRange(pawn, target, state)) return;
             // A melee raider that can reach an enemy goes for it; the ordered target may be far off or walled in.
             if (IsMelee(pawn) && order.Stance != TacticalStance.Withdraw && !MeleeCanGo(pawn, target))
                 target = state.Target = NearestReachableEnemy(pawn);
+            // A retreated raider that reached its safe cell treats its own wounds before anything else.
+            if (order.Stance == TacticalStance.Withdraw && pawn.Position.DistanceTo(dest) <= 2f && TendSelf(pawn, state)) return;
             // Re-issuing the same order every cycle would restart the aim; let a walk or a shoot run on.
             // A raider that only waits at its cell while an enemy is now in reach attacks instead of idling there.
             if (AlreadyCarryingOut(pawn, dest, state) && !(pawn.CurJob?.def == JobDefOf.Wait_Combat && order.Stance != TacticalStance.Withdraw &&
                                                           target != null && (IsMelee(pawn) ? MeleeCanGo(pawn, target) : CanAttackFromHere(pawn, target))))
                 return;
             var go = JobMaker.MakeJob(JobDefOf.Goto, dest);
-            go.locomotionUrgency = order.Stance == TacticalStance.Defensive || pawn.Position.DistanceTo(dest) < 15f
+            go.locomotionUrgency = !order.Kite && (order.Stance == TacticalStance.Defensive || pawn.Position.DistanceTo(dest) < 15f)
                 ? LocomotionUrgency.Jog : LocomotionUrgency.Sprint;
             go.checkOverrideOnExpire = true;
             Start(pawn, go, state);
@@ -66,6 +70,9 @@ public static class OperativeJobExecutor
             // or across the base pulled raiders off their cells and left them stuck against the wall.
             if (target != null && order.Stance != TacticalStance.Withdraw && (!IsMelee(pawn) || MeleeCanGo(pawn, target)))
                 pawn.jobs.jobQueue.EnqueueLast(MakeAttack(pawn, target));
+            // A raider walking back to safety tends itself on arrival.
+            if (order.Stance == TacticalStance.Withdraw && pawn.health.HasHediffsNeedingTend())
+                pawn.jobs.jobQueue.EnqueueLast(MakeTendSelf(pawn));
             // Never leave the queue empty: when it runs out vanilla assault AI would walk the raider elsewhere.
             pawn.jobs.jobQueue.EnqueueLast(MakeHold());
             return;
@@ -73,6 +80,7 @@ public static class OperativeJobExecutor
 
         // Hold: stay put, shooting only if the chosen target is actually hittable from here.
         state.Destination = null;
+        if (order.Stance == TacticalStance.Withdraw && TendSelf(pawn, state)) return;
         if (target != null && order.Stance != TacticalStance.Withdraw && CanAttackFromHere(pawn, target))
         {
             Start(pawn, MakeAttack(pawn, target), state);
@@ -82,6 +90,25 @@ public static class OperativeJobExecutor
         {
             Start(pawn, MakeHold(), state);
         }
+    }
+
+    private static Job MakeTendSelf(Pawn pawn)
+    {
+        var job = JobMaker.MakeJob(JobDefOf.TendPatient, pawn);
+        job.expiryInterval = 600;
+        return job;
+    }
+
+    /// <summary>Starts self-treatment when the raider has wounds needing it, no enemy is close and it is not already tending.</summary>
+    private static bool TendSelf(Pawn pawn, OperativeRuntimeState state)
+    {
+        if (pawn.CurJob?.def == JobDefOf.TendPatient) return true;
+        if (!pawn.health.HasHediffsNeedingTend()) return false;
+        if (OperativeSampler.HostilePawns(pawn).Any(p => pawn.Position.DistanceTo(p.Position) <= 8f)) return false;
+        Log.Message($"[Adaptive Hostiles] {pawn.LabelShort} withdrew and tends its own wounds at ({pawn.Position.x},{pawn.Position.z}).");
+        Start(pawn, MakeTendSelf(pawn), state);
+        pawn.jobs.jobQueue.EnqueueLast(MakeHold());
+        return true;
     }
 
     /// <summary>Stand and shoot whatever comes into view; keeps vanilla movement AI from taking over between orders.</summary>
@@ -111,6 +138,21 @@ public static class OperativeJobExecutor
         pawn.jobs.ClearQueuedJobs();
         pawn.jobs.StartJob(job, JobCondition.InterruptForced);
         state.Job = job;
+        state.Fleeing = false;
+    }
+
+    /// <summary>Hands the pawn back to vanilla AI: its queued jobs go and its current order job ends, so the lord's duty takes over at once.</summary>
+    public static void Release(Pawn pawn, OperativeRuntimeState state)
+    {
+        if (!pawn.Spawned || pawn.Dead || pawn.Downed) return;
+        pawn.jobs.ClearQueuedJobs();
+        var cur = pawn.CurJob;
+        if (cur != null && (cur == state.Job || cur.def == JobDefOf.Wait_Combat || cur.def == JobDefOf.AttackMelee ||
+                            cur.def == JobDefOf.AttackStatic || cur.def == JobDefOf.Goto))
+            pawn.jobs.EndCurrentJob(JobCondition.InterruptForced);
+        state.Job = null;
+        state.Destination = null;
+        state.Target = null;
         state.Fleeing = false;
     }
 
@@ -154,8 +196,20 @@ public static class OperativeJobExecutor
     {
         Thing? pick = null;
         if (IsMelee(pawn))
+        {
+            // A melee raider on a turret stays on it until it is destroyed (or blows up); walking off between cycles looked like kiting.
+            if (pawn.CurJob is { def: var def, targetA.Thing: Building_Turret { Spawned: true, Destroyed: false } held } && def == JobDefOf.AttackMelee &&
+                MeleeCanGo(pawn, held))
+            {
+                state.Target = held;
+                state.Destination = null;
+                return true;
+            }
             pick = OperativeSampler.HostilePawns(pawn).FirstOrDefault(p =>
                 pawn.Position.DistanceTo(p.Position) <= MeleeEngage && pawn.CanReach(p, PathEndMode.Touch, Danger.Deadly));
+            // With no colonist at hand, the ordered turret is attacked as soon as it can be reached.
+            if (pick is null && ordered is Building_Turret { Spawned: true, Destroyed: false } turret && MeleeCanGo(pawn, turret)) pick = turret;
+        }
         else if (ordered != null && CanAttackFromHere(pawn, ordered)) pick = ordered;
         else
         {
@@ -173,8 +227,53 @@ public static class OperativeJobExecutor
         return true;
     }
 
-    private static bool MeleeCanGo(Pawn pawn, Thing? target) =>
-        target != null && pawn.Position.DistanceTo(target.Position) <= 12f && pawn.CanReach(target, PathEndMode.Touch, Danger.Deadly);
+    private const float BlastMargin = 2f;
+
+    /// <summary>
+    /// A hostile turret with a lit wick (a self-destructing one) will explode; a raider inside its blast radius walks to the nearest
+    /// cell outside it, when one can be reached. Once the turret is gone the raider's order carries on as before.
+    /// </summary>
+    private static bool EvadeBlast(Pawn pawn, OperativeRuntimeState state)
+    {
+        foreach (var turret in OperativeSampler.HostileTurrets(pawn))
+        {
+            var bomb = turret.GetComp<CompExplosive>();
+            if (bomb is null || !bomb.wickStarted) continue;
+            var radius = bomb.ExplosiveRadius() + BlastMargin;
+            var away = pawn.Position - turret.Position;
+            var dist = away.LengthHorizontal;
+            if (dist > radius) continue;
+            var scale = dist < 0.5f ? 0f : radius / dist;
+            var spot = turret.Position + new IntVec3(UnityEngine.Mathf.RoundToInt(away.x * scale), 0, UnityEngine.Mathf.RoundToInt(away.z * scale));
+            var cell = GenRadial.RadialCellsAround(spot, 3f, true)
+                .Where(c => c.InBounds(pawn.Map) && c.Standable(pawn.Map) && c.DistanceTo(turret.Position) > radius &&
+                            pawn.CanReach(c, PathEndMode.OnCell, Danger.Deadly))
+                .OrderBy(c => c.DistanceToSquared(pawn.Position)).Cast<IntVec3?>().FirstOrDefault();
+            if (cell is null) continue;
+            if (state.Destination == cell.Value && pawn.CurJob == state.Job) return true;
+            var go = JobMaker.MakeJob(JobDefOf.Goto, cell.Value);
+            go.locomotionUrgency = LocomotionUrgency.Sprint;
+            Start(pawn, go, state);
+            state.Destination = cell.Value;
+            pawn.jobs.jobQueue.EnqueueLast(MakeHold());
+            Log.Message($"[Adaptive Hostiles] {pawn.LabelShort} backs out of the blast of {turret.LabelShort} at ({turret.Position.x},{turret.Position.z}).");
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>A melee raider runs down a colonist it can see across open ground from this far; anything else must be this close.</summary>
+    private const float MeleeChaseRange = 40f;
+
+    private static bool MeleeCanGo(Pawn pawn, Thing? target)
+    {
+        if (target is null) return false;
+        var dist = pawn.Position.DistanceTo(target.Position);
+        if (dist > MeleeChaseRange) return false;
+        // Walls and corners keep the short leash (chasing through them left raiders stuck); a clear line over open ground does not.
+        if (dist > 12f && !(target is Pawn && GenSight.LineOfSight(pawn.Position, target.Position, pawn.Map))) return false;
+        return pawn.CanReach(target, PathEndMode.Touch, Danger.Deadly);
+    }
 
     private static Pawn? NearestReachableEnemy(Pawn pawn) =>
         OperativeSampler.HostilePawns(pawn).FirstOrDefault(p => MeleeCanGo(pawn, p));

@@ -55,7 +55,7 @@ public sealed class DangerMemory
 /// </summary>
 public sealed class StallTracker
 {
-    public const int StallCycles = 15; // about 1500 ticks at the default one-second cadence
+    public const int StallCycles = 8; // about 960 ticks at the default two-second cadence
     public const double MinDamage = 0.001;
     public const double MinDistanceGain = 1.5;
     private readonly HashSet<string> _excluded = new(StringComparer.Ordinal);
@@ -104,25 +104,41 @@ public sealed class StallTracker
     }
 }
 
-/// <summary>With enough raiders against a thin defence, a small group breaks in somewhere else. Decided once per raid.</summary>
+/// <summary>
+/// Pin and flank: with enough raiders, a small group breaks in at another opening while the main group keeps the defenders'
+/// attention at the first one. Decided once per raid.
+/// </summary>
 public static class SquadSplit
 {
     public const int MinRaiders = 6;
-    public const int GroupSize = 2;
+    public const int MinGroup = 2;
+    public const int MaxGroup = 4;
 
-    /// <summary>
-    /// The raiders to send and the breach point they take: the weakest point other than the main one. Needs 6+ raiders,
-    /// a second breach point and at most one defender per two raiders. The Operative stays with the main group, and the
-    /// group is one melee and one ranged raider when possible.
-    /// </summary>
-    public static (IReadOnlyList<string> PawnIds, string BreachId)? Choose(
+    /// <summary>A quarter of the squad, at least <see cref="MinGroup"/> and at most <see cref="MaxGroup"/>.</summary>
+    public static int GroupSizeFor(int raiders) => Math.Clamp(raiders / 4, MinGroup, MaxGroup);
+
+    /// <summary>The flank the game state allows, if any; the model only picks the size within it.</summary>
+    public static FlankOffer? Offer(
         IReadOnlyList<SquadMember> members, IReadOnlyList<BreachPoint> breaches, string mainBreachId, int defenders)
     {
-        if (members.Count < MinRaiders || defenders * 2 > members.Count) return null;
+        if (Choose(members, breaches, mainBreachId, defenders) is not { } pick) return null;
+        return new FlankOffer(pick.BreachId, MinGroup, Math.Clamp(members.Count / 2, MinGroup, MaxGroup));
+    }
+
+    /// <summary>
+    /// The raiders to send and the breach point they take: the weakest point other than the main one. Needs 6+ raiders, a second
+    /// breach point and no more defenders than raiders (the main group must still be able to hold their attention). The
+    /// Operative stays with the main group; the flank group has at least one melee raider and one ranged raider when possible.
+    /// </summary>
+    public static (IReadOnlyList<string> PawnIds, string BreachId)? Choose(
+        IReadOnlyList<SquadMember> members, IReadOnlyList<BreachPoint> breaches, string mainBreachId, int defenders, int? groupSize = null)
+    {
+        if (members.Count < MinRaiders || defenders > members.Count) return null;
         var other = breaches.Where(b => b.Id != mainBreachId)
             .OrderByDescending(b => b.Weakness).ThenBy(b => b.Id, StringComparer.Ordinal).FirstOrDefault();
         if (other is null) return null;
 
+        var size = Math.Clamp(groupSize ?? GroupSizeFor(members.Count), MinGroup, MaxGroup);
         var pool = members.Where(m => !m.IsOperative).ToList();
         var group = new List<SquadMember>();
         var melee = pool.LastOrDefault(m => m.IsMelee);
@@ -131,10 +147,10 @@ public static class SquadSplit
         if (ranged is not null) group.Add(ranged);
         foreach (var m in pool.AsEnumerable().Reverse())
         {
-            if (group.Count >= GroupSize) break;
+            if (group.Count >= size) break;
             if (!group.Contains(m)) group.Add(m);
         }
-        return group.Count < GroupSize ? null : (group.Select(m => m.Snapshot.PawnId).ToList(), other.Id);
+        return group.Count < MinGroup ? null : (group.Select(m => m.Snapshot.PawnId).ToList(), other.Id);
     }
 }
 
@@ -152,7 +168,7 @@ public static class IntentLog
         var verb = phase switch
         {
             SquadPhase.Gather => "gathering at the staging cells for",
-            SquadPhase.Breach => "melee pushing, ranged backing up at",
+            SquadPhase.Breach => ranged == 0 ? "melee pushing at" : decision.MeleeHold ? "melee pushing (holding the last stretch until ranged are in position), ranged covering at" : "melee pushing, ranged covering the push at",
             _ => "pressing the assault through"
         };
         return $"{squad.Members.Count} raiders ({melee} melee, {ranged} ranged) {verb} {where}; {squad.Down}/{squad.Sent} down";

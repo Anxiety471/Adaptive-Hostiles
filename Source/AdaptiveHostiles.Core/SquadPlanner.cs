@@ -19,11 +19,18 @@ public sealed record SquadMember(
 public sealed record BreachPoint(
     string Id, int X, int Z, float Weakness, int Defenders, int Turrets, int WallX = -1, int WallZ = -1, float Danger = 0f);
 
+/// <summary>
+/// A flank the game state allows: a second breach point, enough raiders and a defence the main group can still pin. Jev only
+/// chooses how many raiders go (between <see cref="MinSize"/> and <see cref="MaxSize"/>), or none.
+/// </summary>
+public sealed record FlankOffer(string BreachId, int MinSize, int MaxSize);
+
 public sealed record SquadSnapshot(
     string SquadId, IReadOnlyList<SquadMember> Members, int Sent, int Down, int Retreated,
     IReadOnlyList<BreachPoint>? BreachPoints = null,
     SquadPhase PreviousPhase = SquadPhase.Gather, int GatherCycles = 0, int BreachCycles = 0,
-    IReadOnlyList<DangerZone>? DangerZones = null, double DamageDealt = 0, int Defenders = 0)
+    IReadOnlyList<DangerZone>? DangerZones = null, double DamageDealt = 0, int Defenders = 0, FlankOffer? Flank = null,
+    int Openings = -1, bool? LockedAllIn = null, int Exposed = 0)
 {
     public IReadOnlyList<BreachPoint> Breaches => BreachPoints ?? Array.Empty<BreachPoint>();
 
@@ -42,7 +49,8 @@ public sealed record SquadSnapshot(
 public sealed record SquadDecision(
     SquadTactic Tactic, string? FocusTargetId,
     IReadOnlyDictionary<string, OperativeDecision> Members, bool IsModelDecision,
-    string? BreachId = null, SquadPhase Phase = SquadPhase.Breach);
+    string? BreachId = null, SquadPhase Phase = SquadPhase.Breach,
+    RangedRole RangedRole = RangedRole.Cover, bool MeleeHold = false, int FlankSize = 0, bool AllIn = false, int FunnelSize = 0);
 
 /// <summary>
 /// One model call per squad per cycle. Jev sees every member's exact candidate cells and answers a
@@ -70,7 +78,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
     public const float PointBlank = 3f;
 
     public async Task<SquadDecision> DecideAsync(SquadSnapshot squad, CancellationToken cancellationToken = default) =>
-        CapTargets(RangedEngage(CoverHop(Sync(SquadCommitment.Apply(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad), squad), squad);
+        CapTargets(SquadCoordination.EngageOpen(SquadCoordination.Funnel(SquadCoordination.CoverFire(SquadCoordination.MeleeTiming(SquadCoordination.FollowUp(RangedEngage(CoverHop(Sync(SquadCommitment.Apply(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad), squad), squad), squad), squad), squad), squad), squad);
 
     private async Task<SquadDecision> DecideCoreAsync(SquadSnapshot squad, CancellationToken cancellationToken)
     {
@@ -78,7 +86,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
             .OrderByDescending(m => m.IsOperative)
             .Take(MaxMembers)
             .Select(m => new Entry(m, m.Snapshot.Destinations
-                .Where(c => c.Reachable && c.Id != "hold" && !string.IsNullOrWhiteSpace(c.Id))
+                .Where(c => c.Reachable && c.Id != "hold" && c.Purpose != "kite" && !string.IsNullOrWhiteSpace(c.Id))
                 .GroupBy(c => c.Id, StringComparer.Ordinal).Select(g => g.First())
                 .Take(MaxDestinationsPerMember).ToDictionary(c => c.Id, StringComparer.Ordinal)))
             .ToList();
@@ -129,6 +137,75 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 }
             };
 
+        if (squad.Flank is { } offer)
+        {
+            var flankOptions = new Dictionary<string, string>
+            {
+                ["no_flank"] = "Keep the whole squad together on the main breach point."
+            };
+            for (var n = offer.MinSize; n <= offer.MaxSize; n++)
+                flankOptions[$"flank_{n}"] = $"{n} raiders break off and enter at the other breach point ({offer.BreachId}) while the rest keep the defenders' attention at the main one.";
+            questions["flank"] = new
+            {
+                type = "choice",
+                instructions = $"Part of the squad could circle to a second opening ({offer.BreachId}) and kill the colonists from there while the others keep the defenders busy. How many raiders should go? Use `breachPoints` and `defenders` to see how well the colony covers each opening; a small group is enough when the other opening is weakly defended.",
+                criteria = flankOptions
+            };
+        }
+
+        var coordination = SquadCoordination.Measure(squad, fallback.BreachId);
+        if (squad.Breaches.Count > 0 && coordination.HasBoth)
+        {
+            questions["melee_push"] = new
+            {
+                type = "choice",
+                instructions = "The melee raiders are about to close the last stretch to the opening under the colony's fire. Should they go now, or hold in their last cover until the ranged raiders are in position and firing? Use `coordination` to see where the ranged raiders are.",
+                criteria = new Dictionary<string, string>
+                {
+                    ["go_now"] = "Melee make the final dash now: the ranged raiders are already in place, or the defence is too weak to need cover.",
+                    ["hold_for_cover"] = "Melee wait in cover until the ranged raiders are at their support cells and shooting, so the defenders are busy when the melee run in."
+                }
+            };
+            questions["ranged_role"] = new
+            {
+                type = "choice",
+                instructions = "What should the ranged raiders do while the melee push into the opening? Use `coordination` to see how many melee are already through.",
+                criteria = new Dictionary<string, string>
+                {
+                    ["cover_fire"] = "Stay at the support cells beside the opening and keep shooting the defenders and turrets that cover it, so they cannot all turn on the melee.",
+                    ["follow_through"] = "Move up behind the melee and through the opening; only once the melee are already inside and fighting."
+                }
+            };
+        }
+
+        if (squad.Openings == 1 && squad.Members.Count >= SquadCoordination.FunnelMinSquad && squad.Breaches.Count > 0)
+        {
+            var funnelOptions = new Dictionary<string, string>();
+            for (var n = 2; n <= 4; n++)
+                funnelOptions[$"funnel_{n}"] = $"{n} raiders go through the opening; the others take their own spots and keep the defenders busy.";
+            funnelOptions["funnel_all"] = "Everyone pushes through the one opening.";
+            questions["funnel"] = new
+            {
+                type = "choice",
+                instructions = "The colony's building has exactly one opening, so only a few raiders can use it at a time; the rest would queue behind it in the defenders' fire. How many should go through? Use `defenders` and `breachPoints` to judge: a small group is enough for a weak defence, more when the defenders are few and hurt.",
+                criteria = funnelOptions
+            };
+        }
+
+        if (members.Any(m => !m.Member.IsMelee) && squad.Targets.Any(t => t.Kind != "turret"))
+        {
+            questions["engagement"] = new
+            {
+                type = "choice",
+                instructions = "How should the ranged raiders fight the defenders they can see? Outranging them wins fights cheaply when the raiders' guns reach farther than the colonists'. Going all in costs lives but ends the fight: choose it when the defence is nearly broken, the raid is about to be overrun, or kiting would only drag out a fight the raiders are winning anyway.",
+                criteria = new Dictionary<string, string>
+                {
+                    ["kite"] = "Ranged raiders step back out of the colonists' weapon range, staying inside their own, whenever a colonist's weapon reaches them.",
+                    ["all_in"] = "Ranged raiders stand and shoot or press forward; no stepping back. Use this to finish a weakened defence."
+                }
+            };
+        }
+
         for (var i = 0; i < members.Count; i++)
         {
             var m = members[i];
@@ -136,7 +213,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
             questions[$"move_{i}"] = new
             {
                 type = "choice",
-                instructions = $"Destination for member {i} ({role}). Coordinate with the others: melee members take the chosen breach point's breach_ cell and ranged members its support_ cell, so melee push in front while ranged back them up from behind on the same side. Every member MUST get a different destination, spread over different approaches, use cover, and match the squad plan. Only select a listed ID.",
+                instructions = $"Destination for member {i} ({role}). Coordinate with the others: melee members take the chosen breach point's breach_ cell and ranged members its support_ cell, so melee push in front while ranged cover them from the side. Ranged never run ahead of the melee. Every member MUST get a different destination, spread over different approaches, use cover, and match the squad plan. Only select a listed ID.",
                 criteria = MoveOptions(m.Moves)
             };
             var stances = new Dictionary<string, string>
@@ -161,12 +238,15 @@ public sealed class SquadPlanner(IJevClient? client = null)
             {
                 squad.Sent, squad.Down, squad.Retreated,
                 breachPoints = squad.Breaches,
+                defenders = squad.Defenders,
+                coordination,
                 dangerZones = squad.DangerZones ?? Array.Empty<DangerZone>(),
                 members = members.Select((m, i) => new
                 {
                     index = i, isOperative = m.Member.IsOperative, isMelee = m.Member.IsMelee,
                     m.Member.Snapshot.X, m.Member.Snapshot.Z,
                     health = m.Member.Snapshot.HealthFraction, weapon = m.Member.Snapshot.EquippedWeapon,
+                    visibleTargets = m.Member.Snapshot.Targets.Count(t => t.Visible),
                     destinations = m.Moves.Values.ToArray()
                 }).ToArray(),
                 targets = targets.Values.ToArray()
@@ -197,6 +277,18 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 _ => SquadPhase.Breach
             };
             var focusId = focus == "none" ? null : focus;
+            var flankSize = squad.Flank is { } fo ? ParseFlank(JevAnswers.Choice(root, "flank"), fo) : 0;
+            var rangedRole = JevAnswers.Choice(root, "ranged_role") == "follow_through" ? RangedRole.Follow : RangedRole.Cover;
+            // No answer (no melee or no ranged raiders to coordinate) falls back to the local timing rule.
+            var holdAnswer = JevAnswers.Choice(root, "melee_push");
+            var hold = holdAnswer is null ? SquadCoordination.LocalHoldForCover(coordination) : holdAnswer == "hold_for_cover";
+
+            // No answer keeps the default: the ranged kite.
+            // A recent engagement choice stands for a while (SquadLoop sets the lock), so the squad does not flip between kiting and all-in every cycle.
+            var allIn = squad.LockedAllIn ?? JevAnswers.Choice(root, "engagement") == "all_in";
+            var funnelAnswer = JevAnswers.Choice(root, "funnel");
+            var funnelSize = funnelAnswer == "funnel_all" ? -1
+                : funnelAnswer is not null && funnelAnswer.StartsWith("funnel_", StringComparison.Ordinal) && int.TryParse(funnelAnswer.AsSpan(7), out var fn) && fn is >= 2 and <= 4 ? fn : 0;
 
             var decisions = new Dictionary<string, OperativeDecision>(StringComparer.Ordinal);
             var taken = new HashSet<string>(StringComparer.Ordinal);
@@ -220,11 +312,20 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 if (!valid && chosen.DestinationId != "hold") taken.Add(chosen.DestinationId);
                 decisions[id] = chosen;
             }
-            return new SquadDecision(tactic, focusId, decisions, true, breachId, phase);
+            return new SquadDecision(tactic, focusId, decisions, true, breachId, phase, rangedRole, hold, flankSize, allIn, funnelSize);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return fallback; }
         catch (HttpRequestException) { return fallback; }
         catch (JsonException) { return fallback; }
+    }
+
+    /// <summary>The model's flank size; no valid answer takes the default group size for the squad.</summary>
+    private static int ParseFlank(string? answer, FlankOffer offer)
+    {
+        if (answer == "no_flank") return 0;
+        if (answer is not null && answer.StartsWith("flank_", StringComparison.Ordinal) &&
+            int.TryParse(answer.AsSpan(6), out var n) && n >= offer.MinSize && n <= offer.MaxSize) return n;
+        return Math.Clamp(SquadSplit.GroupSizeFor(offer.MaxSize * 4), offer.MinSize, offer.MaxSize);
     }
 
     private static TacticalStance? ParseStance(string? s, bool isOperative) => s switch
@@ -258,16 +359,35 @@ public sealed class SquadPlanner(IJevClient? client = null)
     }
 
     /// <summary>
-    /// Ranged raiders do not kite or hold a firing distance: an enemy within <see cref="PointBlank"/> cells is shot where the raider
+    /// Ranged raiders kite (<see cref="SquadCoordination.KiteCell"/>) when an enemy's weapon reaches them and they can outrange it; otherwise an enemy within <see cref="PointBlank"/> cells is shot where the raider
     /// stands. Once the squad has gone, a ranged raider that reached its support cell at an open breach with no one in sight moves
     /// up to the opening instead of idling outside.
     /// </summary>
     private static SquadDecision RangedEngage(SquadDecision decision, SquadSnapshot squad)
     {
         var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        var state = SquadCoordination.Measure(squad, decision.BreachId);
+        // Outranging beats standing and trading shots: step to a cell outside the enemies' weapon range but inside our own.
+        // Whoever carries a ranged weapon kites, even in a squad with no melee raiders where they hold the melee role.
+        if (!decision.AllIn)
+            foreach (var m in squad.Members.Where(SquadCoordination.CarriesRangedWeapon))
+            {
+                if (!members.TryGetValue(m.Snapshot.PawnId, out var kd) || kd.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+                if (SquadCoordination.OutrangingTarget(m) is { } shoot)
+                {
+                    // Already outranging them: stand here and shoot instead of walking back in on a role or hop order.
+                    members[m.Snapshot.PawnId] = kd with { DestinationId = "hold", TargetId = shoot.Id, Stance = TacticalStance.Aggressive, Kite = true };
+                    continue;
+                }
+                if (SquadCoordination.KiteCell(m) is not { } kite) continue;
+                var nearest = m.Snapshot.Targets.Where(t => t.Visible && t.Kind != "turret")
+                    .OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).First();
+                members[m.Snapshot.PawnId] = kd with { DestinationId = kite.Id, TargetId = nearest.Id, Stance = TacticalStance.Aggressive, Kite = true };
+            }
         foreach (var m in squad.Members.Where(m => !m.IsMelee))
         {
             if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+            if (d.Kite) continue; // already kiting this cycle
             var close = m.Snapshot.Targets.Where(t => t.Visible && Dist(m, t.X, t.Z) <= PointBlank)
                 .OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).FirstOrDefault();
             if (close is not null)
@@ -280,7 +400,11 @@ public sealed class SquadPlanner(IJevClient? client = null)
             var support = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "support_" + id);
             var breach = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "breach_" + id);
             var press = m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == "press_" + id);
-            if (press is not null && !m.Snapshot.Targets.Any(t => t.Visible) && (Dist(m, press.X, press.Z) <= PressStick || (support is not null && Near(m, support)) || (breach is not null && Near(m, breach))))
+            if (press is null || !(Dist(m, press.X, press.Z) <= PressStick || (support is not null && Near(m, support)) || (breach is not null && Near(m, breach)))) continue;
+            // Ranged never move up ahead of the melee: the opening is taken once at least half the melee are through it.
+            // With "follow_through" they move up behind them even with a target in sight; otherwise only when nothing is in sight.
+            if (!state.MeleeIsThrough) continue;
+            if (decision.RangedRole == RangedRole.Follow || !m.Snapshot.Targets.Any(t => t.Visible && t.Kind != "turret"))
                 members[m.Snapshot.PawnId] = d with { DestinationId = press.Id, Stance = TacticalStance.Aggressive };
         }
         return decision with { Members = members };
@@ -339,7 +463,8 @@ public sealed class SquadPlanner(IJevClient? client = null)
             if (cell is null || hurt || Math.Sqrt(dx * dx + dz * dz) <= StagedWithin) staged++;
         }
         var ready = squad.Members.Count == 0 || staged >= Math.Ceiling(squad.Members.Count * ReadyFraction)
-                    || squad.PreviousPhase != SquadPhase.Gather || squad.GatherCycles >= MaxGatherCycles;
+                    || squad.PreviousPhase != SquadPhase.Gather || squad.GatherCycles >= MaxGatherCycles
+                    || squad.Exposed > 0; // colonists standing in the open end the gathering
         var phase = ready ? (decision.Phase == SquadPhase.Gather ? SquadPhase.Breach : decision.Phase) : SquadPhase.Gather;
         if (phase != SquadPhase.Gather) return PressThrough(decision with { Phase = phase }, squad, breachId);
 
@@ -417,7 +542,9 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 slot: i, focus, canFlee: !m.Member.IsOperative, lossFraction: squad.LossFraction,
                 breachId: Effective(m.Member, breach), isMelee: m.Member.IsMelee, preferTurrets: !m.Member.IsMelee);
         }
-        return new SquadDecision(SquadTactic.FocusFire, focus, decisions, false, breach);
+        return new SquadDecision(SquadTactic.FocusFire, focus, decisions, false, breach,
+            MeleeHold: SquadCoordination.LocalHoldForCover(SquadCoordination.Measure(squad, breach)),
+            FlankSize: squad.Flank is { } offer ? Math.Clamp(SquadSplit.GroupSizeFor(squad.Members.Count), offer.MinSize, offer.MaxSize) : 0);
     }
 
     private static string? Effective(SquadMember m, string? mainBreachId) => m.GroupBreachId ?? mainBreachId;
@@ -438,7 +565,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 counts[d.TargetId] = counts.GetValueOrDefault(d.TargetId) + 1;
                 continue;
             }
-            var next = m.Snapshot.Targets.Where(t => t.Visible && t.Id != "none" && counts.GetValueOrDefault(t.Id) < MaxPerTarget)
+            var next = m.Snapshot.Targets.Where(t => t.Visible && t.Id != "none" && counts.GetValueOrDefault(t.Id) < MaxPerTarget && !(m.IsMelee && t.Kind == "turret" && m.Snapshot.Targets.Any(o => o.Visible && o.Kind != "turret")))
                 .OrderByDescending(t => t.Threat).ThenBy(t => t.Id, StringComparer.Ordinal).FirstOrDefault();
             if (next is not null) counts[next.Id] = counts.GetValueOrDefault(next.Id) + 1;
             capped[m.Snapshot.PawnId] = d with { TargetId = next?.Id };

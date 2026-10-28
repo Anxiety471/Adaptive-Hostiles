@@ -15,7 +15,7 @@ public enum OrderKind
 }
 
 public sealed record OperativeOrder(
-    OrderKind Kind, int X, int Z, string? TargetId, TacticalStance Stance, string Reason);
+    OrderKind Kind, int X, int Z, string? TargetId, TacticalStance Stance, string Reason, bool Kite = false);
 
 /// <summary>
 /// Last gate before native jobs: the decision's destination ID is mapped back to the exact
@@ -64,7 +64,7 @@ public static class OperativeOrderResolver
             if (!currentMap.IsStandable(cell.X, cell.Z) || !currentMap.IsReachable(cell.X, cell.Z))
                 return new OperativeOrder(OrderKind.VanillaFallback, offered.X, offered.Z, targetId,
                     decision.Stance, "destination no longer reachable");
-            order = new OperativeOrder(OrderKind.MoveTo, cell.X, cell.Z, targetId, decision.Stance, cell.Purpose);
+            order = new OperativeOrder(OrderKind.MoveTo, cell.X, cell.Z, targetId, decision.Stance, cell.Purpose, decision.Kite);
         }
 
         record?.Append(new DecisionLogEntry(

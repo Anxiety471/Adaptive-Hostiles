@@ -30,10 +30,14 @@ public sealed class SquadLoop
     private readonly Dictionary<string, (SquadSnapshot Offered, long Tick)> _pending = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (SquadPhase Phase, int GatherCycles, int BreachCycles)> _phase = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StallTracker> _stall = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, HashSet<string>> _withdrawn = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, long>> _withdrawn = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (bool AllIn, long Tick)> _engage = new(StringComparer.Ordinal);
+    /// <summary>An engagement choice (kite or all in) is kept this many ticks before the model may change it.</summary>
+    public const long EngageHoldTicks = 1800;
     private readonly Dictionary<string, long> _gatherStart = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _callStart = new(StringComparer.Ordinal);
     private readonly List<double> _latencyMs = new();
+    private readonly Dictionary<string, string> _sync = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _chosen = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (IReadOnlyList<string> PawnIds, string BreachKey)> _split = new(StringComparer.Ordinal);
 
@@ -57,8 +61,12 @@ public sealed class SquadLoop
         _gatherStart.Remove(squadId);
         _stall.Remove(squadId);
         _chosen.Remove(squadId);
+        _sync.Remove(squadId);
+        _sync.Remove(squadId + "/flank");
+        _sync.Remove(squadId + "/check");
         _withdrawn.Remove(squadId);
         _split.Remove(squadId);
+        _engage.Remove(squadId);
     }
 
     public void Reset()
@@ -68,8 +76,10 @@ public sealed class SquadLoop
         _gatherStart.Clear();
         _stall.Clear();
         _chosen.Clear();
+        _sync.Clear();
         _withdrawn.Clear();
         _split.Clear();
+        _engage.Clear();
         _scheduler?.Reset();
     }
 
@@ -98,6 +108,7 @@ public sealed class SquadLoop
         if (snapshot.Members.Count == 0) return;
         if (_phase.TryGetValue(squadId, out var known))
             snapshot = snapshot with { PreviousPhase = known.Phase, GatherCycles = GatherSeconds(squadId, tick), BreachCycles = known.BreachCycles };
+        if (_engage.TryGetValue(squadId, out var held) && tick - held.Tick < EngageHoldTicks) snapshot = snapshot with { LockedAllIn = held.AllIn };
         snapshot = Tactics(squadId, host, snapshot, _phase.ContainsKey(squadId), known.Phase);
         if (_scheduler is null)
         {
@@ -117,16 +128,62 @@ public sealed class SquadLoop
         {
             var id = member.Snapshot.PawnId;
             if (!decision.Members.TryGetValue(id, out var memberDecision)) continue; // beyond the cap: vanilla AI
-            memberDecision = KeepWithdrawn(squadId, member, memberDecision);
+            memberDecision = KeepWithdrawn(squadId, member, memberDecision, tick);
             var order = OperativeOrderResolver.Resolve(
                 memberDecision, member.Snapshot, host.CurrentMap(id), host.BlockOf(id),
                 member.IsOperative ? host.RecordOf(id) : null, tick, canFlee: !member.IsOperative);
             host.Apply(id, order);
         }
+        if (offered.Flank is { } offer && !_split.ContainsKey(squadId))
+        {
+            // Logged on change only, so a run shows whether a flank was possible and what the model answered.
+            var line = $"flank offered at {offer.BreachId} for {offer.MinSize}-{offer.MaxSize} raiders; {(decision.FlankSize > 0 ? $"{decision.FlankSize} sent" : "none sent")}" +
+                       (decision.IsModelDecision ? "" : " (local default)");
+            if (!_sync.TryGetValue(squadId + "/flank", out var lastLine) || lastLine != line)
+            {
+                _sync[squadId + "/flank"] = line;
+                host.Callout(line);
+            }
+        }
+        if (decision.FlankSize > 0 && offered.Flank is not null && decision.BreachId is not null && !_split.ContainsKey(squadId) &&
+            SquadSplit.Choose(offered.Members, offered.Breaches, decision.BreachId, offered.Defenders, decision.FlankSize) is { } split)
+        {
+            _split[squadId] = (split.PawnIds, BreachKey(offered.Breaches.First(b => b.Id == split.BreachId)));
+            host.Callout($"{split.PawnIds.Count} raiders split off to breach {split.BreachId} to find an opening while the rest keep the defenders busy");
+        }
+        if (!_engage.TryGetValue(squadId, out var heldEngage) || heldEngage.AllIn != decision.AllIn) _engage[squadId] = (decision.AllIn, tick);
         _phase.TryGetValue(squadId, out var prior);
         if (decision.BreachId is not null) _chosen[squadId] = decision.BreachId;
         if (!_phase.ContainsKey(squadId) || prior.Phase != decision.Phase)
             host.Callout(IntentLog.Describe(decision.Phase, decision, offered));
+        if (decision.BreachId is not null && decision.Phase != SquadPhase.Gather)
+        {
+            // Melee/ranged sync, logged whenever it changes so a run shows when melee held and what the ranged were told.
+            var c = SquadCoordination.Measure(offered, decision.BreachId);
+            if (c.HasBoth)
+            {
+                var key = $"{decision.MeleeHold}/{decision.RangedRole}/{c.MeleeIsThrough}/{c.RangedIsReady}";
+                if (!_sync.TryGetValue(squadId, out var last) || last != key)
+                {
+                    _sync[squadId] = key;
+                    host.Callout($"sync: melee {(decision.MeleeHold ? "asked to hold for cover" : "go")}, ranged {decision.RangedRole}; " +
+                                 $"{c.MeleeThrough}/{c.Melee} melee through, {c.RangedInPosition}/{c.Ranged} ranged in position, " +
+                                 $"nearest melee {c.MeleeNearestToBreach:0.#} from the breach cell");
+                }
+            }
+        }
+        if (decision.FunnelSize > 0)
+        {
+            var funnel = $"funnel: one opening, {decision.FunnelSize} raiders go through, {Math.Max(0, offered.Members.Count - decision.FunnelSize)} hold their own spots";
+            if (!_sync.TryGetValue(squadId + "/funnel", out var lastFunnel) || lastFunnel != funnel)
+            { _sync[squadId + "/funnel"] = funnel; host.Callout(funnel); }
+        }
+        if (offered.Members.Any(m => !m.IsMelee) && offered.Targets.Any(t => t.Kind != "turret"))
+        {
+            var engage = $"engagement: ranged {(decision.AllIn ? "all in (no kiting)" : "kiting when outranged")}";
+            if (!_sync.TryGetValue(squadId + "/engage", out var lastEngage) || lastEngage != engage)
+            { _sync[squadId + "/engage"] = engage; host.Callout(engage); }
+        }
         if (decision.Phase == SquadPhase.Gather) _gatherStart.TryAdd(squadId, tick); else _gatherStart.Remove(squadId);
         var gather = decision.Phase == SquadPhase.Gather ? prior.GatherCycles + 1 : 0;
         var breach = decision.Phase == SquadPhase.Gather ? 0 : prior.BreachCycles + 1;
@@ -151,18 +208,25 @@ public sealed class SquadLoop
         _latencyMs.Clear();
     }
 
-    // A raider that withdrew stays withdrawn until it has recovered, so a hurt melee raider does not walk back and forth.
-    private OperativeDecision KeepWithdrawn(string squadId, SquadMember member, OperativeDecision decision)
+    /// <summary>A withdrawn raider that is still bleeding or untreated stays out this long (game ticks) before it is released anyway.</summary>
+    public const long MaxTendWaitTicks = 3600;
+
+    // A raider that withdrew stays withdrawn until it has recovered and treated itself, so a hurt melee raider does not walk back
+    // and forth, and nobody goes back into the fight untreated. The wait for treatment is capped so a raider that cannot tend itself
+    // (no way to) is not held out forever.
+    private OperativeDecision KeepWithdrawn(string squadId, SquadMember member, OperativeDecision decision, long tick)
     {
-        if (!_withdrawn.TryGetValue(squadId, out var set)) _withdrawn[squadId] = set = new HashSet<string>(StringComparer.Ordinal);
+        if (!_withdrawn.TryGetValue(squadId, out var set)) _withdrawn[squadId] = set = new Dictionary<string, long>(StringComparer.Ordinal);
         var id = member.Snapshot.PawnId;
         if (decision.Stance is TacticalStance.Withdraw or TacticalStance.Flee)
         {
-            set.Add(id);
+            set.TryAdd(id, tick);
             return decision;
         }
-        if (!set.Contains(id)) return decision;
-        if (member.Snapshot.HealthFraction >= TacticalHeuristics.WithdrawUntil)
+        if (!set.TryGetValue(id, out var since)) return decision;
+        var healed = member.Snapshot.HealthFraction >= TacticalHeuristics.WithdrawUntil;
+        var treated = !member.Snapshot.NeedsTending || tick - since >= MaxTendWaitTicks;
+        if (healed && treated)
         {
             set.Remove(id);
             return decision;
@@ -171,12 +235,14 @@ public sealed class SquadLoop
         return decision with { DestinationId = safe?.Id ?? "hold", Stance = TacticalStance.Withdraw };
     }
 
+    private static string BreachKey(BreachPoint b) => $"{b.X},{b.Z}";
+
     // Stall replanning, the second breach group and ranged opening a wall, applied to the sampled snapshot.
     private SquadSnapshot Tactics(string squadId, ISquadHost host, SquadSnapshot snapshot, bool known, SquadPhase phase)
     {
         if (snapshot.Breaches.Count == 0) return snapshot;
         if (!_stall.TryGetValue(squadId, out var stall)) _stall[squadId] = stall = new StallTracker();
-        static string Key(BreachPoint b) => $"{b.X},{b.Z}";
+        static string Key(BreachPoint b) => BreachKey(b);
         var keys = snapshot.Breaches.Select(Key).ToList();
 
         if (known && phase != SquadPhase.Gather && _chosen.TryGetValue(squadId, out var chosenId) &&
@@ -194,11 +260,21 @@ public sealed class SquadLoop
         var members = snapshot.Members;
         var main = points.OrderByDescending(b => b.Weakness).ThenBy(b => b.Id, StringComparer.Ordinal).First();
 
-        if (!_split.ContainsKey(squadId) && known && phase != SquadPhase.Gather &&
-            SquadSplit.Choose(members, snapshot.Breaches, main.Id, snapshot.Defenders) is { } split)
+        // The game state decides whether a flank is possible; the model decides how many raiders go (see Finish).
+        FlankOffer? flank = null;
+        // Offered from the first cycle after the squad is known, gathering included: later the opening may already be breached
+        // and only one breach point is left, so the flank group has to take its own staging cell from the start.
+        if (!_split.ContainsKey(squadId) && known)
+            flank = SquadSplit.Offer(members, snapshot.Breaches, main.Id, snapshot.Defenders);
+        if (known && !_split.ContainsKey(squadId))
         {
-            _split[squadId] = (split.PawnIds, Key(snapshot.Breaches.First(b => b.Id == split.BreachId)));
-            host.Callout($"{split.PawnIds.Count} raiders split off to breach {split.BreachId}; defence is thin");
+            var why = $"flank check: {members.Count} raiders, {snapshot.Defenders} defenders, {snapshot.Breaches.Count} breach points (main {main.Id}), " +
+                      (flank is null ? "no flank possible" : $"flank possible at {flank.BreachId}");
+            if (!_sync.TryGetValue(squadId + "/check", out var lastCheck) || lastCheck != why)
+            {
+                _sync[squadId + "/check"] = why;
+                host.Callout(why);
+            }
         }
         if (_split.TryGetValue(squadId, out var group) && snapshot.Breaches.FirstOrDefault(b => Key(b) == group.BreachKey) is { } gb)
             members = members.Select(m => group.PawnIds.Contains(m.Snapshot.PawnId) ? m with { GroupBreachId = gb.Id } : m).ToList();
@@ -213,6 +289,6 @@ public sealed class SquadLoop
                 members = members.Select(m => !m.IsMelee && m.GroupBreachId is null
                     ? m with { IsMelee = true, GroupBreachId = other.Id } : m).ToList();
         }
-        return snapshot with { BreachPoints = points, Members = members };
+        return snapshot with { BreachPoints = points, Members = members, Flank = flank };
     }
 }

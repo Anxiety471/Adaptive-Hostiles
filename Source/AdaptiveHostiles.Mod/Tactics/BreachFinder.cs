@@ -17,11 +17,75 @@ public static class BreachFinder
     private const int MaxPathTargets = 5;
     private const int MinSpacing = 8;
 
+    private const float OpeningScanRadius = 30f;
+
+    /// <summary>
+    /// How many openings the building around the defenders has: an outside doorway or gap, a walkable cell with a wall on both
+    /// sides of one axis and a roof over one end of the other axis but not the other. Neighbouring such cells are one opening.
+    /// A base with no such cell is sealed or open, and counts 0 or many.
+    /// </summary>
+    public static int CountOpenings(Map map, IntVec3 centre)
+    {
+        if (!centre.IsValid) return -1;
+        bool Wall(int x, int z)
+        {
+            var c = new IntVec3(x, 0, z);
+            return c.InBounds(map) && c.Impassable(map) && c.GetEdifice(map) != null;
+        }
+        bool Roofed(int x, int z)
+        {
+            var c = new IntVec3(x, 0, z);
+            return c.InBounds(map) && c.Roofed(map);
+        }
+        var holes = new List<IntVec3>();
+        foreach (var c in GenRadial.RadialCellsAround(centre, OpeningScanRadius, true))
+        {
+            if (!c.InBounds(map) || !c.Walkable(map)) continue;
+            var x = c.x;
+            var z = c.z;
+            var eastWest = Wall(x, z + 1) && Wall(x, z - 1) && Roofed(x + 1, z) != Roofed(x - 1, z);
+            var northSouth = Wall(x + 1, z) && Wall(x - 1, z) && Roofed(x, z + 1) != Roofed(x, z - 1);
+            if (eastWest || northSouth) holes.Add(c);
+        }
+        var clusters = 0;
+        var seen = new HashSet<IntVec3>();
+        foreach (var h in holes)
+        {
+            if (!seen.Add(h)) continue;
+            clusters++;
+            var queue = new Queue<IntVec3>();
+            queue.Enqueue(h);
+            while (queue.Count > 0)
+            {
+                var cur = queue.Dequeue();
+                foreach (var n in holes)
+                    if (!seen.Contains(n) && Math.Abs(n.x - cur.x) <= 2 && Math.Abs(n.z - cur.z) <= 2 && seen.Add(n)) queue.Enqueue(n);
+            }
+        }
+        return clusters;
+    }
+
     public static IntVec3 DefenderCentre(IReadOnlyList<Pawn> defenders, IReadOnlyList<Building_Turret> turrets)
     {
         var cells = defenders.Select(p => p.Position).Concat(turrets.Select(t => t.Position)).ToList();
         if (cells.Count == 0) return IntVec3.Invalid;
         return new IntVec3((int)cells.Average(c => c.x), 0, (int)cells.Average(c => c.z));
+    }
+
+    /// <summary>
+    /// Defenders the reference raider can walk up to with no wall, door or other blocker on the way: standing in the open, not
+    /// inside a building. Checked for the nearest few only.
+    /// </summary>
+    public static List<Pawn> ExposedColonists(Pawn reference, IReadOnlyList<Pawn> defenders)
+    {
+        var result = new List<Pawn>();
+        foreach (var d in defenders.Take(MaxPathTargets * 2))
+        {
+            var cells = WallBreaker.PathCells(reference, d);
+            if (cells.Count == 0) continue;
+            if (cells.All(c => WallBreaker.BlockerAt(reference, c) is null)) result.Add(d);
+        }
+        return result;
     }
 
     /// <summary>
@@ -31,11 +95,16 @@ public static class BreachFinder
     /// </summary>
     public static List<BreachPoint> Find(
         Pawn reference, RimWorldTacticalMap map, IReadOnlyList<Pawn> defenders,
-        IReadOnlyList<Building_Turret> turrets, IntVec3 centre, DangerMemory danger, long now, IntVec3? visionWall = null)
+        IReadOnlyList<Building_Turret> turrets, IntVec3 centre, DangerMemory danger, long now, IntVec3? visionWall = null,
+        IReadOnlyList<Pawn>? exposed = null)
     {
         var candidates = new List<BreachPoint>();
         if (!centre.IsValid) return candidates;
-        var targets = defenders.Cast<Thing>().Take(MaxPathTargets).Concat(turrets.Take(MaxPathTargets));
+        // Colonists in the open come first: nothing stands between them and the raiders, so they are the best point to attack.
+        var open = exposed ?? Array.Empty<Pawn>();
+        var targets = open.Cast<Thing>().Take(MaxPathTargets)
+            .Concat(defenders.Where(d => !open.Contains(d)).Cast<Thing>().Take(MaxPathTargets))
+            .Concat(turrets.Take(MaxPathTargets));
         foreach (var target in targets)
         {
             var cells = WallBreaker.PathCells(reference, target);
@@ -54,6 +123,8 @@ public static class BreachFinder
             var covered = turrets.Count(t => cell.DistanceTo(t.Position) <= OperativeSampler.TurretRange(t) + 1f);
             var fell = danger.Penalty(s.StandX, s.StandZ, now);
             var weakness = BreachRoute.Weakness(sees, covered, fell);
+            // An open way to a colonist outside the walls outranks every wall: no digging, and the colonist is cut off from the base.
+            if (target is Pawn p && open.Contains(p) && s.WallX < 0) weakness += 1f;
             candidates.Add(new BreachPoint("", s.StandX, s.StandZ, weakness, sees, covered, s.WallX, s.WallZ, fell));
         }
         if (visionWall is { } hinted && VisionCandidate(reference, map, hinted) is { } extra)
@@ -67,7 +138,43 @@ public static class BreachFinder
                 extra.WallX, extra.WallZ, fell));
             Log.Message($"[Adaptive Hostiles] Jev image candidate: wall ({extra.WallX},{extra.WallZ}), stand ({extra.StandX},{extra.StandZ}).");
         }
-        return BreachRoute.Pick(candidates, MaxPoints, MinSpacing);
+        var picked = BreachRoute.Pick(candidates, MaxPoints, MinSpacing);
+        // Every path ran into the same wall: offer a second wall further along it, so part of the squad can flank there.
+        if (picked.Count == 1 && picked[0].WallX >= 0 && AlternateCandidate(reference, map, defenders, turrets, picked[0], centre, danger, now) is { } alt)
+            picked = BreachRoute.Pick(candidates.Append(alt).ToList(), MaxPoints, MinSpacing);
+        return picked;
+    }
+
+    /// <summary>
+    /// A second wall or door at least <see cref="MinSpacing"/> cells from the main one, within 16 cells of it, with a standable
+    /// cell on the raiders' side (reachable from where they are), the one nearest the defenders. Null when there is none.
+    /// </summary>
+    private static BreachPoint? AlternateCandidate(
+        Pawn reference, RimWorldTacticalMap map, IReadOnlyList<Pawn> defenders, IReadOnlyList<Building_Turret> turrets,
+        BreachPoint main, IntVec3 centre, DangerMemory danger, long now)
+    {
+        var mainWall = new IntVec3(main.WallX, 0, main.WallZ);
+        (IntVec3 Wall, IntVec3 Stand)? best = null;
+        var bestScore = float.MaxValue;
+        foreach (var c in GenRadial.RadialCellsAround(mainWall, 16f, false))
+        {
+            if (!c.InBounds(reference.Map) || Math.Abs(c.x - main.WallX) + Math.Abs(c.z - main.WallZ) < MinSpacing) continue;
+            if (WallBreaker.BlockerAt(reference, c) is null) continue;
+            var stand = GenAdj.CellsAdjacent8Way(new TargetInfo(c, reference.Map))
+                .Where(s => map.IsStandable(s.x, s.z) && map.IsReachable(s.x, s.z))
+                .OrderBy(s => s.DistanceToSquared(reference.Position)).Cast<IntVec3?>().FirstOrDefault();
+            if (stand is not { } st) continue;
+            var score = centre.IsValid ? st.DistanceToSquared(centre) : 0f;
+            if (score >= bestScore) continue;
+            best = (c, st);
+            bestScore = score;
+        }
+        if (best is not { } b) return null;
+        var sees = defenders.Count(d => d.Position.DistanceTo(b.Stand) <= DefenderSightRange && GenSight.LineOfSight(d.Position, b.Stand, reference.Map));
+        var covered = turrets.Count(t => b.Stand.DistanceTo(t.Position) <= OperativeSampler.TurretRange(t) + 1f);
+        var fell = danger.Penalty(b.Stand.x, b.Stand.z, now);
+        Log.Message($"[Adaptive Hostiles] alternate breach candidate: wall ({b.Wall.x},{b.Wall.z}), stand ({b.Stand.x},{b.Stand.z}).");
+        return new BreachPoint("", b.Stand.x, b.Stand.z, BreachRoute.Weakness(sees, covered, fell), sees, covered, b.Wall.x, b.Wall.z, fell);
     }
 
     // The wall or door nearest the cell Jev pointed at, with the raiders' side stand cell next to it; null when none is within reach.
@@ -116,9 +223,12 @@ public static class BreachFinder
                 var hlen = (float)Math.Sqrt(hx * hx + hz * hz);
                 // Far out the first stop is the edge of the exposed zone (25 cells from the role cell), so the walk in is not slowed.
                 var step = hlen > BreachRoute.HopFar + BreachRoute.HopStep ? hlen - BreachRoute.HopFar : BreachRoute.HopStep;
+                // A hop always closes in: it must lie at least 60% of the step nearer the role cell, so the cover it picks to the
+                // side of the line still carries the raider forward instead of sideways or back.
+                Func<int, int, bool> closer = (x, z) => Math.Sqrt(Math.Pow(x - rc.Item1, 2) + Math.Pow(z - rc.Item2, 2)) <= hlen - 0.6f * step;
                 if (hlen > BreachRoute.HopTrigger)
                     Add(result, pawn, map, Pinned(pawn, map, "hop_" + bp.Id, () => FindCover(map, pawn.Position.x + (int)Math.Round(hx / hlen * step),
-                        pawn.Position.z + (int)Math.Round(hz / hlen * step), slot, used, null)), "hop_" + bp.Id, used);
+                        pawn.Position.z + (int)Math.Round(hz / hlen * step), slot, used, closer)), "hop_" + bp.Id, used);
             }
             // An open breach has no wall to break: melee also get a press cell past the opening toward the defenders, one per raider.
             // The press cell is measured from the raider itself once it is through, so the push keeps going each cycle until

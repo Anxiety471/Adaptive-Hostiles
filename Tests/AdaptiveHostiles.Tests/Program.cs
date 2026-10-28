@@ -946,6 +946,19 @@ await Check("melee in the open: a colonist in sight is attacked instead of stagi
     Require(d.DestinationId == "adv" && d.TargetId == "c1" && d.Stance == TacticalStance.Aggressive, "melee walked to the base staging cell with a colonist in the open");
 });
 
+await Check("open colonist: ranged raiders spread over several sectors around it even when they can see it", async () =>
+{
+    MovementCandidate C(string id, int x, int z) => new(id, x, z, 0.5f, 0.2f, 10, "firing_position", true);
+    var ring = new[] { C("e", 160, 100), C("w", 100, 100), C("n", 130, 130), C("s", 130, 70), C("ne", 152, 122), C("sw", 108, 78) };
+    SquadMember Raider(string id) => new(new OperativeSnapshot(id, 130, 60 + id.Length, 1f, "x", 2, ring,
+        new[] { new TargetCandidate("c1", 130, 100, 0.9f, true, "pawn", 20f) }, false, 30f), false, false);
+    var members = new[] { Raider("r1"), Raider("r2"), Raider("r3"), Raider("r4") };
+    var squad = new SquadSnapshot("s", members, 4, 0, 0, new[] { new BreachPoint("B1", 130, 98, 0.9f, 0, 0) }, SquadPhase.Breach, Exposed: 1);
+    var d = await new SquadPlanner().DecideAsync(squad);
+    var picked = members.Select(m => d.Members[m.Snapshot.PawnId].DestinationId).Distinct().Count();
+    Require(picked >= 3, "ranged raiders crowded onto the same few cells around a colonist in the open");
+});
+
 await Check("funnel: a building with one opening sends a small group through, the rest take their own spots", async () =>
 {
     MovementCandidate C(string id, string purpose, int x, int z, float exposure = 0.2f) => new(id, x, z, 0.5f, exposure, 10, purpose, true);

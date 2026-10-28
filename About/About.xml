@@ -18,7 +18,7 @@
   </loadAfter>
   <description>Raids that think.
 
-Every hostile raid is commanded as one squad by an AI decision model, so raiders stop trickling in and start fighting like a team:
+Needs a decision-model key. With one, every hostile raid is commanded as one squad by an AI decision model, so raiders stop trickling in and start fighting like a team. Without a key the mod does nothing and raids stay vanilla.
 
 - They gather, find the weakest way into your base and push the breach together: melee in front, ranged covering, a second group flanking when there is another opening.
 - Ranged raiders kite: they step out of your colonists' weapon range and shoot from inside their own. Melee swarm. Shield-belt wearers press in.
@@ -26,7 +26,7 @@ Every hostile raid is commanded as one squad by an AI decision model, so raiders
 - Melee keep hitting turrets until they fall and dodge blasts. A building with one door gets a small group through it while the rest hold their own spots.
 - Raiders do not run away on their own. When the last colonist is dead they loot and leave as usual.
 
-Raid timing is still your storyteller's. Pick the decision model in Options > Mod settings: TypeSafe Jev, Anthropic or an OpenAI-compatible server. With no key the mod plays the same plan with built-in local logic.
+Raid timing is still your storyteller's. Enter your key and pick the decision model in Options > Mod settings: TypeSafe Jev (recommended), Anthropic or an OpenAI-compatible server.
 
 Requires Harmony. Built for RimWorld 1.7. Please report problems on GitHub: Anxiety471/Adaptive-Hostiles.</description>
 </ModMetaData>

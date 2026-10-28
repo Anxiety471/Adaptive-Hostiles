@@ -1,8 +1,8 @@
 # Adaptive Hostiles
 
-**Raids that think.** Every hostile raid is commanded as one squad by an AI decision model (Jev by default), so raiders gather, find the weakest way in, push breaches with melee in front and ranged covering, kite with long-range weapons, and go after colonists caught in the open. They do not run away on their own.
+**Raids that think.** With a decision-model key, every hostile raid is commanded as one squad by an AI decision model (Jev by default), so raiders gather, find the weakest way in, push breaches with melee in front and ranged covering, kite with long-range weapons, and go after colonists caught in the open. They do not run away on their own.
 
-> **Status: playable, in testing.** Built for RimWorld 1.7. The squad behaviour below has been tried in live raids against fortress layouts, open ground and turret-heavy bases; expect rough edges and please report them. The Operative (elite pawn) feature is deferred: no special pawn is spawned right now.
+> **Status: playable, in testing.** Built for RimWorld 1.7. The squad behaviour below has been tried in live raids against fortress layouts, open ground and turret-heavy bases; expect rough edges and please report them. The elite Operative pawn has been dropped: no special pawn is spawned.
 
 ## What raiders do
 
@@ -21,7 +21,7 @@ Raids still arrive when your storyteller says so; Adaptive Hostiles changes how 
 
 ## Decision models
 
-Pick a model in **Options > Mod settings > Adaptive Hostiles**: TypeSafe Jev (recommended), Anthropic, or any OpenAI-compatible server. With no key the mod uses its built-in local logic, which plays the same plan without a network. Network calls run in the background and never block the game; a slow or failed answer falls back to local logic for that cycle.
+Pick a model in **Options > Mod settings > Adaptive Hostiles**: TypeSafe Jev (recommended), Anthropic, or any OpenAI-compatible server. **A key is required.** With no key (or the provider set to Off) the mod does nothing and raids stay vanilla. Network calls run in the background and never block the game; a slow or failed answer falls back to the built-in rules for that cycle.
 
 ## Design
 

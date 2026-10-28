@@ -905,6 +905,11 @@ await Check("kite: a ranged raider steps outside the colonists' weapon range, in
     var squad = new SquadSnapshot("s", new[] { m }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
     var d = await new SquadPlanner().DecideAsync(squad);
     Require(d.Members["r1"].DestinationId == "out" && d.Members["r1"].Kite && d.Members["r1"].TargetId == "c1", "planner did not turn the kite into an order");
+    // Melee raiders never kite: they keep swarming the colonists.
+    var meleeSnap = m.Snapshot with { PawnId = "m1" };
+    var mixed = new SquadSnapshot("s", new[] { new SquadMember(meleeSnap, false, true), m }, 2, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
+    var mixedDecision = await new SquadPlanner().DecideAsync(mixed);
+    Require(!mixedDecision.Members["m1"].Kite && mixedDecision.Members["r1"].Kite, "melee raider received a kite order");
     // Jev can go all in: no kite order then.
     var allIn = new FakeClient("""{"answers":{"tactic":{"type":"choice","choice":"suppress_push"},"focus":{"type":"choice","choice":"none"},"breach":{"type":"choice","choice":"B1"},"phase":{"type":"choice","choice":"breach"},"engagement":{"type":"choice","choice":"all_in"}}}""");
     var ai = await new SquadPlanner(allIn).DecideAsync(squad);

@@ -247,8 +247,18 @@ public static class OperativeJobExecutor
         return false;
     }
 
-    private static bool MeleeCanGo(Pawn pawn, Thing? target) =>
-        target != null && pawn.Position.DistanceTo(target.Position) <= 12f && pawn.CanReach(target, PathEndMode.Touch, Danger.Deadly);
+    /// <summary>A melee raider runs down a colonist it can see across open ground from this far; anything else must be this close.</summary>
+    private const float MeleeChaseRange = 40f;
+
+    private static bool MeleeCanGo(Pawn pawn, Thing? target)
+    {
+        if (target is null) return false;
+        var dist = pawn.Position.DistanceTo(target.Position);
+        if (dist > MeleeChaseRange) return false;
+        // Walls and corners keep the short leash (chasing through them left raiders stuck); a clear line over open ground does not.
+        if (dist > 12f && !(target is Pawn && GenSight.LineOfSight(pawn.Position, target.Position, pawn.Map))) return false;
+        return pawn.CanReach(target, PathEndMode.Touch, Danger.Deadly);
+    }
 
     private static Pawn? NearestReachableEnemy(Pawn pawn) =>
         OperativeSampler.HostilePawns(pawn).FirstOrDefault(p => MeleeCanGo(pawn, p));

@@ -30,6 +30,8 @@ public static class SquadCoordination
     public const float MeleeCommitWithin = 6f;
     /// <summary>Melee hold for cover for at most this many breach cycles (about a second each); then they go regardless.</summary>
     public const int MaxCoverWaitCycles = 12;
+    /// <summary>A melee raider with an enemy pawn in sight this close is fighting and counts as through the opening.</summary>
+    public const float EngagedWithin = 8f;
 
     public static CoordinationState Measure(SquadSnapshot squad, string? breachId)
     {
@@ -47,7 +49,8 @@ public static class SquadCoordination
                 var breach = Cell(m, "breach_", id);
                 var press = Cell(m, "press_", id);
                 if (breach is not null) nearest = Math.Min(nearest, Dist(m, breach.X, breach.Z));
-                if ((press is not null && Dist(m, press.X, press.Z) <= SquadPlanner.PressStick) ||
+                if (Engaged(m) ||
+                    (press is not null && Dist(m, press.X, press.Z) <= SquadPlanner.PressStick) ||
                     (press is not null && breach is not null && Dist(m, breach.X, breach.Z) <= SquadPlanner.PressWithin))
                     through++;
             }
@@ -56,7 +59,7 @@ public static class SquadCoordination
                 ranged++;
                 var support = Cell(m, "support_", id);
                 if (support is null || Dist(m, support.X, support.Z) <= InPositionWithin) inPosition++;
-                if (m.Snapshot.Targets.Any(t => t.Visible)) firing++;
+                if (m.Snapshot.Targets.Any(t => t.Visible && t.Kind != "turret")) firing++;
             }
         }
         var defenders = squad.Members.Select(m => m.Snapshot.Targets.Count(t => t.Visible && t.Kind == "pawn")).DefaultIfEmpty(0).Max();
@@ -119,6 +122,42 @@ public static class SquadCoordination
             var threat = visible.OrderBy(t => (t.X - cx) * (t.X - cx) + (t.Z - cz) * (t.Z - cz))
                 .ThenByDescending(t => t.Threat).ThenBy(t => t.Id, StringComparer.Ordinal).First();
             members[m.Snapshot.PawnId] = d with { TargetId = threat.Id };
+        }
+        return decision with { Members = members };
+    }
+
+    /// <summary>A melee raider fighting: an enemy pawn in sight within <see cref="EngagedWithin"/> cells counts as through the opening, wall or no wall.</summary>
+    private static bool Engaged(SquadMember m) =>
+        m.Snapshot.Targets.Any(t => t.Visible && t.Kind != "turret" && Dist(m, t.X, t.Z) <= EngagedWithin);
+
+    /// <summary>
+    /// Ranged raiders do not wait outside while the melee fight inside: once the melee are through or engaged, a ranged raider that
+    /// has nothing in sight moves to the firing or advance cell nearest the enemies the squad can see, so it goes in behind the
+    /// melee and supports them. Sealed or open breach alike; raiders still gathering, withdrawing, or with a target in sight stay.
+    /// </summary>
+    public static SquadDecision FollowUp(SquadDecision decision, SquadSnapshot squad)
+    {
+        if (decision.Phase == SquadPhase.Gather || decision.BreachId is null) return decision;
+        var state = Measure(squad, decision.BreachId);
+        if (!state.HasBoth || !state.MeleeIsThrough || SquadCommitment.Losing(squad)) return decision;
+        var enemies = squad.Targets.Where(t => t.Kind != "turret").ToList();
+        if (enemies.Count == 0) return decision;
+
+        var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        var slot = 0;
+        foreach (var m in squad.Members.Where(m => !m.IsMelee))
+        {
+            if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+            // Turrets are always listed as visible, so only an enemy pawn in sight keeps a ranged raider where it is.
+            if (m.Snapshot.Targets.Any(t => t.Visible && t.Kind != "turret")) continue;
+            var near = enemies.OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).First();
+            var cells = m.Snapshot.Destinations
+                .Where(c => c.Reachable && !c.InTurretRange && (c.Purpose == "firing_position" || c.Purpose == "advance"))
+                .OrderBy(c => (c.X - near.X) * (c.X - near.X) + (c.Z - near.Z) * (c.Z - near.Z)).ThenBy(c => c.Id, StringComparer.Ordinal).ToList();
+            if (cells.Count == 0 || cells[0].Id == d.DestinationId) continue;
+            // Spread over the nearest few cells so the ranged do not stack on one.
+            var pick = cells[Math.Min(slot++ % 3, cells.Count - 1)];
+            members[m.Snapshot.PawnId] = d with { DestinationId = pick.Id, TargetId = near.Id, Stance = TacticalStance.Aggressive };
         }
         return decision with { Members = members };
     }

@@ -71,7 +71,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
     public const float PointBlank = 3f;
 
     public async Task<SquadDecision> DecideAsync(SquadSnapshot squad, CancellationToken cancellationToken = default) =>
-        CapTargets(SquadCoordination.CoverFire(SquadCoordination.MeleeTiming(RangedEngage(CoverHop(Sync(SquadCommitment.Apply(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad), squad), squad), squad), squad);
+        CapTargets(SquadCoordination.CoverFire(SquadCoordination.MeleeTiming(SquadCoordination.FollowUp(RangedEngage(CoverHop(Sync(SquadCommitment.Apply(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad), squad), squad), squad), squad), squad);
 
     private async Task<SquadDecision> DecideCoreAsync(SquadSnapshot squad, CancellationToken cancellationToken)
     {
@@ -317,7 +317,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
             // Ranged never move up ahead of the melee: the opening is taken once at least half the melee are through it.
             // With "follow_through" they move up behind them even with a target in sight; otherwise only when nothing is in sight.
             if (!state.MeleeIsThrough) continue;
-            if (decision.RangedRole == RangedRole.Follow || !m.Snapshot.Targets.Any(t => t.Visible))
+            if (decision.RangedRole == RangedRole.Follow || !m.Snapshot.Targets.Any(t => t.Visible && t.Kind != "turret"))
                 members[m.Snapshot.PawnId] = d with { DestinationId = press.Id, Stance = TacticalStance.Aggressive };
         }
         return decision with { Members = members };

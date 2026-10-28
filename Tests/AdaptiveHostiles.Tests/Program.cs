@@ -1153,6 +1153,24 @@ await Check("ranged/melee sync: melee hold for cover, ranged cover the melee and
     Require((await new SquadPlanner().DecideAsync(wait)).Members["m1"].DestinationId == "hold", "offline melee did not wait for ranged");
 });
 
+await Check("ranged go in behind engaged melee at a sealed breach instead of waiting outside", async () =>
+{
+    MovementCandidate C(string id, string purpose, int x, int z) => new(id, x, z, 0.5f, 0.2f, 10, purpose, true);
+    var inside = new TargetCandidate("c1", 140, 90, 0.8f, true);
+    var melee = new SquadMember(new OperativeSnapshot("m1", 133, 90, 1f, "x", 1,
+        new[] { C("m1_b", "breach_B1", 130, 90) }, new[] { inside }), false, true);
+    var ranged = new SquadMember(new OperativeSnapshot("r1", 124, 94, 1f, "x", 1,
+        new[] { C("r1_s", "support_B1", 124, 94), C("r1_far", "advance", 110, 90), C("r1_in", "firing_position", 136, 91) }, System.Array.Empty<TargetCandidate>()), false, false);
+    SquadSnapshot Snap(params SquadMember[] ms) => new("s", ms, ms.Length, 0, 0,
+        new[] { new BreachPoint("B1", 130, 90, 0.5f, 1, 0, 128, 90) }, SquadPhase.Breach, 0, 1);
+    var d = await new SquadPlanner().DecideAsync(Snap(melee, ranged));
+    Require(d.Members["r1"].DestinationId == "r1_in", "ranged stayed outside while the melee fought");
+    // melee not engaged and far away: ranged keep their support cell
+    var farMelee = melee with { Snapshot = melee.Snapshot with { X = 100, Targets = System.Array.Empty<TargetCandidate>() } };
+    var d2 = await new SquadPlanner().DecideAsync(Snap(farMelee, ranged));
+    Require(d2.Members["r1"].DestinationId != "r1_in", "ranged went in before the melee were engaged");
+});
+
 Console.WriteLine($"Tests: {passed} passed, {failed} failed");
 Environment.ExitCode = failed == 0 ? 0 : 1;
 

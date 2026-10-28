@@ -901,6 +901,15 @@ await Check("kite: a ranged raider steps outside the colonists' weapon range, in
     // Already outside the colonist's reach: stay and shoot.
     var safe = new SquadMember(m.Snapshot with { X = 70, Z = 90, Targets = new[] { new TargetCandidate("c1", 100, 90, 0.9f, true, "pawn", 20f) } }, false, false);
     Require(SquadCoordination.KiteCell(safe) is null, "kited while already outside the enemy's range");
+    // Once outranging, the raider holds and shoots; role, hop and press orders must not walk it back in.
+    var safeSquad = new SquadSnapshot("s", new[] { safe }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
+    var held = (await new SquadPlanner().DecideAsync(safeSquad)).Members["r1"];
+    Require(held.DestinationId == "hold" && held.Kite && held.TargetId == "c1", "outranging raider was sent back in instead of holding");
+    // Nobody in sight and no melee to wait for: the ranged raider looks for a firing angle toward the colonists.
+    var blind = new SquadMember(m.Snapshot with { Targets = new[] { new TargetCandidate("c1", 106, 90, 0.9f, false, "pawn", 20f) },
+        Destinations = new[] { C("angle", "firing_position", 104, 90), C("back", "cover", 90, 90) } }, false, false);
+    var seek = (await new SquadPlanner().DecideAsync(new SquadSnapshot("s", new[] { blind }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach))).Members["r1"];
+    Require(seek.DestinationId == "angle", "ranged raider with nobody in sight stood still instead of seeking an angle");
     // Through the planner: the order carries the kite flag and the shot target.
     var squad = new SquadSnapshot("s", new[] { m }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach);
     var d = await new SquadPlanner().DecideAsync(squad);

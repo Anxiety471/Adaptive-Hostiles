@@ -140,13 +140,14 @@ public static class SquadCoordination
     {
         if (decision.Phase == SquadPhase.Gather || decision.BreachId is null) return decision;
         var state = Measure(squad, decision.BreachId);
-        if (!state.HasBoth || !state.MeleeIsThrough || SquadCommitment.Losing(squad)) return decision;
+        // With no melee to wait for (or none ranged), a ranged raider that sees nobody still goes looking for a firing angle.
+        if ((state.HasBoth && !state.MeleeIsThrough) || SquadCommitment.Losing(squad)) return decision;
         var enemies = squad.Targets.Where(t => t.Kind != "turret").ToList();
         if (enemies.Count == 0) return decision;
 
         var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
         var slot = 0;
-        foreach (var m in squad.Members.Where(m => !m.IsMelee))
+        foreach (var m in squad.Members.Where(m => !m.IsMelee || (!state.HasBoth && CarriesRangedWeapon(m))))
         {
             if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
             // Turrets are always listed as visible, so only an enemy pawn in sight keeps a ranged raider where it is.
@@ -201,6 +202,21 @@ public static class SquadCoordination
             .OrderByDescending(c => Math.Min(Margin(c.X, c.Z), KiteMargin * 3))
             .ThenBy(c => Math.Pow(c.X - m.Snapshot.X, 2) + Math.Pow(c.Z - m.Snapshot.Z, 2))
             .ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault();
+    }
+
+    /// <summary>
+    /// The raider already outranges every enemy it sees: outside all their weapon reach and with one of them inside its own range.
+    /// It then stays and shoots; any other order (advance, press, hop, support) would walk it back into their range just to kite out again.
+    /// Returns the enemy to shoot, nearest first.
+    /// </summary>
+    public static TargetCandidate? OutrangingTarget(SquadMember m)
+    {
+        if (m.Snapshot.HasShield) return null;
+        var mine = m.Snapshot.WeaponRange > 0 ? m.Snapshot.WeaponRange : 20f;
+        var threats = m.Snapshot.Targets.Where(t => t.Visible && t.Kind != "turret")
+            .Select(t => (T: t, Reach: t.Range > 2f ? t.Range : MeleeReach, Dist: Math.Sqrt(Math.Pow(m.Snapshot.X - t.X, 2) + Math.Pow(m.Snapshot.Z - t.Z, 2)))).ToList();
+        if (threats.Count == 0 || m.Snapshot.Targets.Any(t => t.Visible && t.Kind != "turret" && t.Range <= 0f) || threats.Any(e => e.Reach >= mine) || threats.Any(e => e.Dist - e.Reach <= KiteMargin)) return null;
+        return threats.Where(e => e.Dist <= mine).OrderBy(e => e.Dist).ThenBy(e => e.T.Id, StringComparer.Ordinal).Select(e => e.T).FirstOrDefault();
     }
 
     /// <summary>A squad needs at least this many raiders before a single opening limits who goes through.</summary>

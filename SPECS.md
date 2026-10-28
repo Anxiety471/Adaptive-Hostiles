@@ -198,3 +198,5 @@ Every raid is commanded as one squad by Jev from its first tick; no Operative is
 - Direct control of animation frames, arbitrary raw path routes, or game-engine calls from Jev.
 - Removing vanilla points from every RimWorld subsystem.
 - Replacing all hostile incidents from DLCs and other mods on day one.
+
+- **Kiting holds (2026-10-28).** A ranged raider already outside every visible enemy's weapon reach and inside its own holds and shoots (no role, hop or press order walks it back in). Enemies with unknown range do not count. The kite/all-in engagement choice stays for 30 s before the model may change it. With no melee in the squad, a ranged raider that sees nobody moves to the firing/advance cell nearest the enemies.

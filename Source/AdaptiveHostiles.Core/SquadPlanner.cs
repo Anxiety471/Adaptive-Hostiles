@@ -30,7 +30,7 @@ public sealed record SquadSnapshot(
     IReadOnlyList<BreachPoint>? BreachPoints = null,
     SquadPhase PreviousPhase = SquadPhase.Gather, int GatherCycles = 0, int BreachCycles = 0,
     IReadOnlyList<DangerZone>? DangerZones = null, double DamageDealt = 0, int Defenders = 0, FlankOffer? Flank = null,
-    int Openings = -1)
+    int Openings = -1, bool? LockedAllIn = null)
 {
     public IReadOnlyList<BreachPoint> Breaches => BreachPoints ?? Array.Empty<BreachPoint>();
 
@@ -284,7 +284,8 @@ public sealed class SquadPlanner(IJevClient? client = null)
             var hold = holdAnswer is null ? SquadCoordination.LocalHoldForCover(coordination) : holdAnswer == "hold_for_cover";
 
             // No answer keeps the default: the ranged kite.
-            var allIn = JevAnswers.Choice(root, "engagement") == "all_in";
+            // A recent engagement choice stands for a while (SquadLoop sets the lock), so the squad does not flip between kiting and all-in every cycle.
+            var allIn = squad.LockedAllIn ?? JevAnswers.Choice(root, "engagement") == "all_in";
             var funnelAnswer = JevAnswers.Choice(root, "funnel");
             var funnelSize = funnelAnswer == "funnel_all" ? -1
                 : funnelAnswer is not null && funnelAnswer.StartsWith("funnel_", StringComparison.Ordinal) && int.TryParse(funnelAnswer.AsSpan(7), out var fn) && fn is >= 2 and <= 4 ? fn : 0;
@@ -372,6 +373,12 @@ public sealed class SquadPlanner(IJevClient? client = null)
             foreach (var m in squad.Members.Where(SquadCoordination.CarriesRangedWeapon))
             {
                 if (!members.TryGetValue(m.Snapshot.PawnId, out var kd) || kd.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+                if (SquadCoordination.OutrangingTarget(m) is { } shoot)
+                {
+                    // Already outranging them: stand here and shoot instead of walking back in on a role or hop order.
+                    members[m.Snapshot.PawnId] = kd with { DestinationId = "hold", TargetId = shoot.Id, Stance = TacticalStance.Aggressive, Kite = true };
+                    continue;
+                }
                 if (SquadCoordination.KiteCell(m) is not { } kite) continue;
                 var nearest = m.Snapshot.Targets.Where(t => t.Visible && t.Kind != "turret")
                     .OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).First();

@@ -31,6 +31,9 @@ public sealed class SquadLoop
     private readonly Dictionary<string, (SquadPhase Phase, int GatherCycles, int BreachCycles)> _phase = new(StringComparer.Ordinal);
     private readonly Dictionary<string, StallTracker> _stall = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, long>> _withdrawn = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (bool AllIn, long Tick)> _engage = new(StringComparer.Ordinal);
+    /// <summary>An engagement choice (kite or all in) is kept this many ticks before the model may change it.</summary>
+    public const long EngageHoldTicks = 1800;
     private readonly Dictionary<string, long> _gatherStart = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _callStart = new(StringComparer.Ordinal);
     private readonly List<double> _latencyMs = new();
@@ -63,6 +66,7 @@ public sealed class SquadLoop
         _sync.Remove(squadId + "/check");
         _withdrawn.Remove(squadId);
         _split.Remove(squadId);
+        _engage.Remove(squadId);
     }
 
     public void Reset()
@@ -75,6 +79,7 @@ public sealed class SquadLoop
         _sync.Clear();
         _withdrawn.Clear();
         _split.Clear();
+        _engage.Clear();
         _scheduler?.Reset();
     }
 
@@ -103,6 +108,7 @@ public sealed class SquadLoop
         if (snapshot.Members.Count == 0) return;
         if (_phase.TryGetValue(squadId, out var known))
             snapshot = snapshot with { PreviousPhase = known.Phase, GatherCycles = GatherSeconds(squadId, tick), BreachCycles = known.BreachCycles };
+        if (_engage.TryGetValue(squadId, out var held) && tick - held.Tick < EngageHoldTicks) snapshot = snapshot with { LockedAllIn = held.AllIn };
         snapshot = Tactics(squadId, host, snapshot, _phase.ContainsKey(squadId), known.Phase);
         if (_scheduler is null)
         {
@@ -145,6 +151,7 @@ public sealed class SquadLoop
             _split[squadId] = (split.PawnIds, BreachKey(offered.Breaches.First(b => b.Id == split.BreachId)));
             host.Callout($"{split.PawnIds.Count} raiders split off to breach {split.BreachId} to find an opening while the rest keep the defenders busy");
         }
+        if (!_engage.TryGetValue(squadId, out var heldEngage) || heldEngage.AllIn != decision.AllIn) _engage[squadId] = (decision.AllIn, tick);
         _phase.TryGetValue(squadId, out var prior);
         if (decision.BreachId is not null) _chosen[squadId] = decision.BreachId;
         if (!_phase.ContainsKey(squadId) || prior.Phase != decision.Phase)

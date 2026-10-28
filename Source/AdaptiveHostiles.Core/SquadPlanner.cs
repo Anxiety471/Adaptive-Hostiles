@@ -78,7 +78,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
     public const float PointBlank = 3f;
 
     public async Task<SquadDecision> DecideAsync(SquadSnapshot squad, CancellationToken cancellationToken = default) =>
-        CapTargets(SquadCoordination.Funnel(SquadCoordination.CoverFire(SquadCoordination.MeleeTiming(SquadCoordination.FollowUp(RangedEngage(CoverHop(Sync(SquadCommitment.Apply(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad), squad), squad), squad), squad), squad), squad);
+        CapTargets(SquadCoordination.EngageOpen(SquadCoordination.Funnel(SquadCoordination.CoverFire(SquadCoordination.MeleeTiming(SquadCoordination.FollowUp(RangedEngage(CoverHop(Sync(SquadCommitment.Apply(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad), squad), squad), squad), squad), squad), squad), squad);
 
     private async Task<SquadDecision> DecideCoreAsync(SquadSnapshot squad, CancellationToken cancellationToken)
     {
@@ -564,7 +564,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 counts[d.TargetId] = counts.GetValueOrDefault(d.TargetId) + 1;
                 continue;
             }
-            var next = m.Snapshot.Targets.Where(t => t.Visible && t.Id != "none" && counts.GetValueOrDefault(t.Id) < MaxPerTarget)
+            var next = m.Snapshot.Targets.Where(t => t.Visible && t.Id != "none" && counts.GetValueOrDefault(t.Id) < MaxPerTarget && !(m.IsMelee && t.Kind == "turret" && m.Snapshot.Targets.Any(o => o.Visible && o.Kind != "turret")))
                 .OrderByDescending(t => t.Threat).ThenBy(t => t.Id, StringComparer.Ordinal).FirstOrDefault();
             if (next is not null) counts[next.Id] = counts.GetValueOrDefault(next.Id) + 1;
             capped[m.Snapshot.PawnId] = d with { TargetId = next?.Id };

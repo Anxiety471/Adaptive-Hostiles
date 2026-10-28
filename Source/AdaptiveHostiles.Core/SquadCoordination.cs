@@ -219,6 +219,37 @@ public static class SquadCoordination
         return threats.Where(e => e.Dist <= mine).OrderBy(e => e.Dist).ThenBy(e => e.T.Id, StringComparer.Ordinal).Select(e => e.T).FirstOrDefault();
     }
 
+    /// <summary>A colonist in sight this close is attacked at once, whatever the plan for the base says.</summary>
+    public const float OpenEngageWithin = 30f;
+
+    /// <summary>
+    /// Melee raiders do not walk past colonists standing in the open to stage at a breach: any colonist in sight within
+    /// <see cref="OpenEngageWithin"/> cells is the target, and the raider heads for the cell nearest it. Withdrawing raiders,
+    /// kiting ones and a losing squad are left alone.
+    /// </summary>
+    public static SquadDecision EngageOpen(SquadDecision decision, SquadSnapshot squad)
+    {
+        if (SquadCommitment.Losing(squad)) return decision;
+        var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        foreach (var m in squad.Members.Where(m => m.IsMelee && !CarriesRangedWeapon(m)))
+        {
+            if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Kite || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+            // Only a raider that is staging or wandering is redirected; one on its breach, press or hop cell, or holding for cover on purpose, keeps the plan.
+            var purpose = m.Snapshot.Destinations.FirstOrDefault(c => c.Id == d.DestinationId)?.Purpose ?? "";
+            if (d.DestinationId == "hold" || purpose.StartsWith("breach_", StringComparison.Ordinal) || purpose.StartsWith("press_", StringComparison.Ordinal) ||
+                purpose.StartsWith("hop_", StringComparison.Ordinal) || purpose.StartsWith("support_", StringComparison.Ordinal)) continue;
+            var near = m.Snapshot.Targets.Where(t => t.Visible && t.Kind == "pawn" && Dist(m, t.X, t.Z) <= OpenEngageWithin)
+                .OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).FirstOrDefault();
+            if (near is null) continue;
+            var cell = m.Snapshot.Destinations
+                .Where(c => c.Reachable && c.Purpose is "advance" or "firing_position" or "cover" or "press_" or "kite")
+                .OrderBy(c => c.InTurretRange).ThenBy(c => (c.X - near.X) * (c.X - near.X) + (c.Z - near.Z) * (c.Z - near.Z))
+                .ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault();
+            members[m.Snapshot.PawnId] = d with { DestinationId = cell?.Id ?? "hold", TargetId = near.Id, Stance = TacticalStance.Aggressive };
+        }
+        return decision with { Members = members };
+    }
+
     /// <summary>A squad needs at least this many raiders before a single opening limits who goes through.</summary>
     public const int FunnelMinSquad = 5;
     public const int FunnelDefault = 3;

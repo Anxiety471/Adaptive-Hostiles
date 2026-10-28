@@ -936,6 +936,16 @@ await Check("kite: a ranged raider steps outside the colonists' weapon range, in
     Require((await new SquadPlanner(kiteAns).DecideAsync(squad)).Members["r1"].Kite, "kite answer ignored");
 });
 
+await Check("melee in the open: a colonist in sight is attacked instead of staging for the base", async () =>
+{
+    MovementCandidate C(string id, string purpose, int x, int z) => new(id, x, z, 0.5f, 0.2f, 10, purpose, true);
+    var melee = new OperativeSnapshot("m1", 100, 90, 1f, "x", 2, new[] { C("stage", "stage_B1", 130, 90), C("adv", "advance", 108, 90) },
+        new[] { new TargetCandidate("c1", 110, 90, 0.9f, true, "pawn", 20f) }, false, 2f);
+    var squad = new SquadSnapshot("s", new[] { new SquadMember(melee, false, true) }, 1, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Gather);
+    var d = (await new SquadPlanner().DecideAsync(squad)).Members["m1"];
+    Require(d.DestinationId == "adv" && d.TargetId == "c1" && d.Stance == TacticalStance.Aggressive, "melee walked to the base staging cell with a colonist in the open");
+});
+
 await Check("funnel: a building with one opening sends a small group through, the rest take their own spots", async () =>
 {
     MovementCandidate C(string id, string purpose, int x, int z, float exposure = 0.2f) => new(id, x, z, 0.5f, exposure, 10, purpose, true);

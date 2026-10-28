@@ -25,6 +25,22 @@ public static class BreachFinder
     }
 
     /// <summary>
+    /// Defenders the reference raider can walk up to with no wall, door or other blocker on the way: standing in the open, not
+    /// inside a building. Checked for the nearest few only.
+    /// </summary>
+    public static List<Pawn> ExposedColonists(Pawn reference, IReadOnlyList<Pawn> defenders)
+    {
+        var result = new List<Pawn>();
+        foreach (var d in defenders.Take(MaxPathTargets * 2))
+        {
+            var cells = WallBreaker.PathCells(reference, d);
+            if (cells.Count == 0) continue;
+            if (cells.All(c => WallBreaker.BlockerAt(reference, c) is null)) result.Add(d);
+        }
+        return result;
+    }
+
+    /// <summary>
     /// One candidate per defender or turret the reference raider can path to: the stand cell and the first wall or door
     /// on that shortest path (the same route vanilla sappers dig along). Open bases have no wall, so the candidate is a
     /// cell a few steps short of the target.

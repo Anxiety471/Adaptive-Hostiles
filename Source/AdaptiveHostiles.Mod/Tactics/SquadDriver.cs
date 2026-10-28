@@ -17,7 +17,8 @@ public static class SquadDriver
     private const int BreachKeepTicks = 6000;
     /// <summary>While colonists stand out in the open the breach is re-planned this often, so the squad follows them.</summary>
     private const int ExposedReplanTicks = 300;
-    private static readonly Dictionary<string, bool> ExposedMemory = new();
+    private const int ExposedCheckTicks = 120;
+    private static readonly Dictionary<string, (int Tick, List<Pawn> Exposed)> ExposedMemory = new();
     private static readonly Dictionary<string, (int Tick, List<BreachPoint> Points, int Vision)> BreachMemory = new();
     /// <summary>Where raiders went down, shared by every raid until the game is reloaded.</summary>
     private static readonly DangerMemory Danger = new();
@@ -211,10 +212,11 @@ public static class SquadDriver
             var lostNew = RecordLosses(watch, now);
             // Jev's picture reading is cached and fetched in the background; a new reading re-plans the breach once.
             var visionWall = BaseVisionService.WeakWall(lead.Map);
-            // Colonists out in the open (no roof over them) are the squad's first target: the plan follows them out of the base.
-            var exposed = defenders.Where(c => !c.Position.Roofed(c.Map)).ToList();
-            var wasExposed = ExposedMemory.TryGetValue(raid.Id, out var before) && before;
-            ExposedMemory[raid.Id] = exposed.Count > 0;
+            // Colonists out in the open (nothing man-made between them and the raiders) are the squad's first target: the plan follows them out of the base.
+            var wasExposed = ExposedMemory.TryGetValue(raid.Id, out var before) && before.Exposed.Count > 0;
+            if (!ExposedMemory.ContainsKey(raid.Id) || now - ExposedMemory[raid.Id].Tick >= ExposedCheckTicks)
+                ExposedMemory[raid.Id] = (now, BreachFinder.ExposedColonists(lead, defenders));
+            var exposed = ExposedMemory[raid.Id].Exposed.Where(c => !c.Dead && !c.Downed && c.Spawned).ToList();
             if (!BreachMemory.TryGetValue(raid.Id, out var kept) || now - kept.Tick > BreachKeepTicks || kept.Points.Count == 0 || lostNew || WallFell(kept.Points, lead.Map) ||
                 kept.Vision != BaseVisionService.Version || (exposed.Count > 0 && (!wasExposed || now - kept.Tick >= ExposedReplanTicks)) || (exposed.Count == 0 && wasExposed))
                 BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre, Danger, now, visionWall, exposed), BaseVisionService.Version);

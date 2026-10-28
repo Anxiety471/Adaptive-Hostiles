@@ -179,8 +179,20 @@ public static class OperativeJobExecutor
     {
         Thing? pick = null;
         if (IsMelee(pawn))
+        {
+            // A melee raider on a turret stays on it until it is destroyed (or blows up); walking off between cycles looked like kiting.
+            if (pawn.CurJob is { def: var def, targetA.Thing: Building_Turret { Spawned: true, Destroyed: false } held } && def == JobDefOf.AttackMelee &&
+                MeleeCanGo(pawn, held))
+            {
+                state.Target = held;
+                state.Destination = null;
+                return true;
+            }
             pick = OperativeSampler.HostilePawns(pawn).FirstOrDefault(p =>
                 pawn.Position.DistanceTo(p.Position) <= MeleeEngage && pawn.CanReach(p, PathEndMode.Touch, Danger.Deadly));
+            // With no colonist at hand, the ordered turret is attacked as soon as it can be reached.
+            if (pick is null && ordered is Building_Turret { Spawned: true, Destroyed: false } turret && MeleeCanGo(pawn, turret)) pick = turret;
+        }
         else if (ordered != null && CanAttackFromHere(pawn, ordered)) pick = ordered;
         else
         {

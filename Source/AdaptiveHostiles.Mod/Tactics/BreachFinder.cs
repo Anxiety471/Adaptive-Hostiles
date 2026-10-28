@@ -175,9 +175,12 @@ public static class BreachFinder
                 var hlen = (float)Math.Sqrt(hx * hx + hz * hz);
                 // Far out the first stop is the edge of the exposed zone (25 cells from the role cell), so the walk in is not slowed.
                 var step = hlen > BreachRoute.HopFar + BreachRoute.HopStep ? hlen - BreachRoute.HopFar : BreachRoute.HopStep;
+                // A hop always closes in: it must lie at least 60% of the step nearer the role cell, so the cover it picks to the
+                // side of the line still carries the raider forward instead of sideways or back.
+                Func<int, int, bool> closer = (x, z) => Math.Sqrt(Math.Pow(x - rc.Item1, 2) + Math.Pow(z - rc.Item2, 2)) <= hlen - 0.6f * step;
                 if (hlen > BreachRoute.HopTrigger)
                     Add(result, pawn, map, Pinned(pawn, map, "hop_" + bp.Id, () => FindCover(map, pawn.Position.x + (int)Math.Round(hx / hlen * step),
-                        pawn.Position.z + (int)Math.Round(hz / hlen * step), slot, used, null)), "hop_" + bp.Id, used);
+                        pawn.Position.z + (int)Math.Round(hz / hlen * step), slot, used, closer)), "hop_" + bp.Id, used);
             }
             // An open breach has no wall to break: melee also get a press cell past the opening toward the defenders, one per raider.
             // The press cell is measured from the raider itself once it is through, so the push keeps going each cycle until

@@ -52,12 +52,14 @@ The initial raid decision asks independent typed Choice questions, `scale` (`rec
 
 ## 4. Jev Operative
 
+> **Deferred (2026-10-28).** Every raid is commanded by Jev without an Operative; spawning a specialised elite pawn waits for a later release. The default Operative chance is therefore not needed for squad control.
+
 ### Spawn and stats
 
 - Spawn chance: proposed 5% per eligible raid, seeded/serialized for reproducible saves.
 - One per incident by default; do not make every raid a boss battle.
 - Humanlike, hostile, faction-compatible pawn. Respect restrictions from Ideology, Biotech, Anomaly, and modded faction pawn kinds.
-- Proposed range: shooting 16–20, melee 14–20, high-quality faction-appropriate armor/weapons, possible enhancements. Stats and gear are configurable and are **not yet applied by the scaffold**.
+- Proposed range: shooting 16–20, melee 14–20, high-quality faction-appropriate armor/weapons, possible enhancements. Stats and gear are configurable and are not applied until the Operative feature returns.
 - Surviving Operatives may recur only if persistence and faction compatibility make it safe.
 
 ### Decision loop

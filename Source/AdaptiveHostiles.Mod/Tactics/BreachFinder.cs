@@ -67,7 +67,43 @@ public static class BreachFinder
                 extra.WallX, extra.WallZ, fell));
             Log.Message($"[Adaptive Hostiles] Jev image candidate: wall ({extra.WallX},{extra.WallZ}), stand ({extra.StandX},{extra.StandZ}).");
         }
-        return BreachRoute.Pick(candidates, MaxPoints, MinSpacing);
+        var picked = BreachRoute.Pick(candidates, MaxPoints, MinSpacing);
+        // Every path ran into the same wall: offer a second wall further along it, so part of the squad can flank there.
+        if (picked.Count == 1 && picked[0].WallX >= 0 && AlternateCandidate(reference, map, defenders, turrets, picked[0], centre, danger, now) is { } alt)
+            picked = BreachRoute.Pick(candidates.Append(alt).ToList(), MaxPoints, MinSpacing);
+        return picked;
+    }
+
+    /// <summary>
+    /// A second wall or door at least <see cref="MinSpacing"/> cells from the main one, within 16 cells of it, with a standable
+    /// cell on the raiders' side (reachable from where they are), the one nearest the defenders. Null when there is none.
+    /// </summary>
+    private static BreachPoint? AlternateCandidate(
+        Pawn reference, RimWorldTacticalMap map, IReadOnlyList<Pawn> defenders, IReadOnlyList<Building_Turret> turrets,
+        BreachPoint main, IntVec3 centre, DangerMemory danger, long now)
+    {
+        var mainWall = new IntVec3(main.WallX, 0, main.WallZ);
+        (IntVec3 Wall, IntVec3 Stand)? best = null;
+        var bestScore = float.MaxValue;
+        foreach (var c in GenRadial.RadialCellsAround(mainWall, 16f, false))
+        {
+            if (!c.InBounds(reference.Map) || Math.Abs(c.x - main.WallX) + Math.Abs(c.z - main.WallZ) < MinSpacing) continue;
+            if (WallBreaker.BlockerAt(reference, c) is null) continue;
+            var stand = GenAdj.CellsAdjacent8Way(new TargetInfo(c, reference.Map))
+                .Where(s => map.IsStandable(s.x, s.z) && map.IsReachable(s.x, s.z))
+                .OrderBy(s => s.DistanceToSquared(reference.Position)).Cast<IntVec3?>().FirstOrDefault();
+            if (stand is not { } st) continue;
+            var score = centre.IsValid ? st.DistanceToSquared(centre) : 0f;
+            if (score >= bestScore) continue;
+            best = (c, st);
+            bestScore = score;
+        }
+        if (best is not { } b) return null;
+        var sees = defenders.Count(d => d.Position.DistanceTo(b.Stand) <= DefenderSightRange && GenSight.LineOfSight(d.Position, b.Stand, reference.Map));
+        var covered = turrets.Count(t => b.Stand.DistanceTo(t.Position) <= OperativeSampler.TurretRange(t) + 1f);
+        var fell = danger.Penalty(b.Stand.x, b.Stand.z, now);
+        Log.Message($"[Adaptive Hostiles] alternate breach candidate: wall ({b.Wall.x},{b.Wall.z}), stand ({b.Stand.x},{b.Stand.z}).");
+        return new BreachPoint("", b.Stand.x, b.Stand.z, BreachRoute.Weakness(sees, covered, fell), sees, covered, b.Wall.x, b.Wall.z, fell);
     }
 
     // The wall or door nearest the cell Jev pointed at, with the raiders' side stand cell next to it; null when none is within reach.

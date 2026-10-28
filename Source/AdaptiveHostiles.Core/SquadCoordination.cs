@@ -79,7 +79,8 @@ public static class SquadCoordination
     {
         if (!decision.MeleeHold || decision.Phase != SquadPhase.Breach || decision.BreachId is null) return decision;
         var state = Measure(squad, decision.BreachId);
-        if (!state.HasBoth || state.RangedIsReady || state.BreachCycles >= MaxCoverWaitCycles || SquadCommitment.Losing(squad)) return decision;
+        // MeleeHold on the returned decision means the hold is in effect, not just asked for (the intent log reads it).
+        if (!state.HasBoth || state.RangedIsReady || state.BreachCycles >= MaxCoverWaitCycles || SquadCommitment.Losing(squad)) return decision with { MeleeHold = false };
 
         var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
         foreach (var m in squad.Members.Where(m => m.IsMelee))

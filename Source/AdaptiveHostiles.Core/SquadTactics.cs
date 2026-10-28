@@ -168,7 +168,7 @@ public static class IntentLog
         var verb = phase switch
         {
             SquadPhase.Gather => "gathering at the staging cells for",
-            SquadPhase.Breach => decision.MeleeHold ? "melee pushing (holding the last stretch until ranged are in position), ranged covering at" : "melee pushing, ranged covering the push at",
+            SquadPhase.Breach => ranged == 0 ? "melee pushing at" : decision.MeleeHold ? "melee pushing (holding the last stretch until ranged are in position), ranged covering at" : "melee pushing, ranged covering the push at",
             _ => "pressing the assault through"
         };
         return $"{squad.Members.Count} raiders ({melee} melee, {ranged} ranged) {verb} {where}; {squad.Down}/{squad.Sent} down";

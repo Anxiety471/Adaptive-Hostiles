@@ -24,6 +24,8 @@ public static class OperativeSampler
         {
             if (p == self || p.Dead || p.Downed || p.Faction is null || p.IsPrisoner || p.IsSlave) continue;
             if (!self.Faction.HostileTo(p.Faction)) continue;
+            // The colony's pets are not defenders: raiders shot a husky outside the wall instead of supporting the push.
+            if (p.RaceProps.Animal && p.Faction == Faction.OfPlayer) continue;
             if (p.GetComp<CompCanBeDormant>() is { Awake: false }) continue; // a sleeping mech cluster is not a threat yet
             if (!p.Position.InHorDistOf(self.Position, ThreatScanRadius)) continue;
             result.Add(p);

@@ -141,6 +141,21 @@ public static class OperativeJobExecutor
         state.Fleeing = false;
     }
 
+    /// <summary>Hands the pawn back to vanilla AI: its queued jobs go and its current order job ends, so the lord's duty takes over at once.</summary>
+    public static void Release(Pawn pawn, OperativeRuntimeState state)
+    {
+        if (!pawn.Spawned || pawn.Dead || pawn.Downed) return;
+        pawn.jobs.ClearQueuedJobs();
+        var cur = pawn.CurJob;
+        if (cur != null && (cur == state.Job || cur.def == JobDefOf.Wait_Combat || cur.def == JobDefOf.AttackMelee ||
+                            cur.def == JobDefOf.AttackStatic || cur.def == JobDefOf.Goto))
+            pawn.jobs.EndCurrentJob(JobCondition.InterruptForced);
+        state.Job = null;
+        state.Destination = null;
+        state.Target = null;
+        state.Fleeing = false;
+    }
+
     private static void ReleaseToVanilla(Pawn pawn, OperativeRuntimeState state)
     {
         if (state.Job != null && pawn.CurJob == state.Job)

@@ -203,6 +203,57 @@ public static class SquadCoordination
             .ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault();
     }
 
+    /// <summary>A squad needs at least this many raiders before a single opening limits who goes through.</summary>
+    public const int FunnelMinSquad = 5;
+    public const int FunnelDefault = 3;
+
+    /// <summary>
+    /// A building with one opening: only a small group goes through it (melee first, a ranged raider or two to cover the door); the
+    /// rest do not queue behind them in the defenders' fire but hold their own spots, the least exposed cover or firing cell nearby,
+    /// shooting what they can see. The group is the raiders nearest the opening each cycle, so a fallen one is replaced from the holders.
+    /// Does not apply while the squad is losing, while it gathers, or to a raider kiting or splitting off to another breach.
+    /// </summary>
+    public static SquadDecision Funnel(SquadDecision decision, SquadSnapshot squad)
+    {
+        if (squad.Openings != 1 || squad.Members.Count < FunnelMinSquad || decision.FunnelSize < 0) return decision;
+        if (decision.Phase == SquadPhase.Gather || decision.BreachId is null || SquadCommitment.Losing(squad)) return decision;
+        if (squad.Breaches.FirstOrDefault(b => b.Id == decision.BreachId) is not { WallX: < 0 }) return decision;
+
+        var size = decision.FunnelSize > 0 ? decision.FunnelSize : FunnelDefault;
+        var coverSlots = size >= 3 ? Math.Max(1, size / 3) : 0;
+        double ToOpening(SquadMember m)
+        {
+            var c = Cell(m, "breach_", decision.BreachId);
+            return c is null ? double.MaxValue : Dist(m, c.X, c.Z);
+        }
+        var candidates = squad.Members.Where(m => m.GroupBreachId is null &&
+            decision.Members.TryGetValue(m.Snapshot.PawnId, out var d) && d.Stance is not (TacticalStance.Withdraw or TacticalStance.Flee)).ToList();
+        var group = candidates.Where(m => m.IsMelee).OrderBy(ToOpening).ThenBy(m => m.Snapshot.PawnId, StringComparer.Ordinal).Take(size - coverSlots)
+            .Concat(candidates.Where(m => !m.IsMelee).OrderBy(ToOpening).ThenBy(m => m.Snapshot.PawnId, StringComparer.Ordinal).Take(Math.Max(coverSlots, 0)))
+            .Select(m => m.Snapshot.PawnId).ToHashSet(StringComparer.Ordinal);
+        // A group short of melee is made up with the nearest others, so a ranged-only squad still sends someone.
+        foreach (var m in candidates.OrderBy(ToOpening).ThenBy(m => m.Snapshot.PawnId, StringComparer.Ordinal))
+        {
+            if (group.Count >= size) break;
+            group.Add(m.Snapshot.PawnId);
+        }
+
+        var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        foreach (var m in candidates)
+        {
+            if (group.Contains(m.Snapshot.PawnId)) continue;
+            var d = members[m.Snapshot.PawnId];
+            if (d.Kite) continue;
+            var spot = m.Snapshot.Destinations
+                .Where(c => c.Reachable && !c.InTurretRange && c.Purpose is "cover" or "firing_position")
+                .OrderBy(c => c.Exposure).ThenBy(c => c.Distance).ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault();
+            if (spot is null) continue;
+            // Holders keep shooting what they see; melee holders wait in their spot instead of running into the door.
+            members[m.Snapshot.PawnId] = d with { DestinationId = spot.Id, Stance = m.IsMelee ? TacticalStance.Defensive : TacticalStance.Aggressive };
+        }
+        return decision with { Members = members, FunnelSize = size };
+    }
+
     private static MovementCandidate? Cell(SquadMember m, string prefix, string? id) =>
         id is null ? null : m.Snapshot.Destinations.FirstOrDefault(c => c.Reachable && c.Purpose == prefix + id);
 

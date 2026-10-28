@@ -165,6 +165,12 @@ public sealed class SquadLoop
                 }
             }
         }
+        if (decision.FunnelSize > 0)
+        {
+            var funnel = $"funnel: one opening, {decision.FunnelSize} raiders go through, {Math.Max(0, offered.Members.Count - decision.FunnelSize)} hold their own spots";
+            if (!_sync.TryGetValue(squadId + "/funnel", out var lastFunnel) || lastFunnel != funnel)
+            { _sync[squadId + "/funnel"] = funnel; host.Callout(funnel); }
+        }
         if (offered.Members.Any(m => !m.IsMelee) && offered.Targets.Any(t => t.Kind != "turret"))
         {
             var engage = $"engagement: ranged {(decision.AllIn ? "all in (no kiting)" : "kiting when outranged")}";

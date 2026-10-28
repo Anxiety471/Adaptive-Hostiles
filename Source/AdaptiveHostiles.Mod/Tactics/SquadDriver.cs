@@ -19,6 +19,9 @@ public static class SquadDriver
     private const int ExposedReplanTicks = 300;
     private const int ExposedCheckTicks = 120;
     private static readonly HashSet<string> CommandedRaids = new();
+    private static readonly Dictionary<string, int> OpeningsMemory = new();
+    /// <summary>Raids whose colonists are all dead: the squad lets go for good and vanilla AI (loot, leave) takes over.</summary>
+    private static readonly HashSet<string> ReleasedRaids = new();
     private static readonly Dictionary<string, (int Tick, List<Pawn> Exposed)> ExposedMemory = new();
     private static readonly Dictionary<string, (int Tick, List<BreachPoint> Points, int Vision)> BreachMemory = new();
     /// <summary>Where raiders went down, shared by every raid until the game is reloaded.</summary>
@@ -76,6 +79,8 @@ public static class SquadDriver
         BreachMemory.Clear();
         ExposedMemory.Clear();
         CommandedRaids.Clear();
+        OpeningsMemory.Clear();
+        ReleasedRaids.Clear();
         Watches.Clear();
         Danger.Clear();
         BreachFinder.ResetPins();
@@ -93,9 +98,20 @@ public static class SquadDriver
             var members = raid.Raiders
                 .Where(p => p is { Spawned: true, Dead: false } && p.Faction != null && p.HostileTo(Faction.OfPlayer))
                 .Cast<Pawn>().ToList();
+            if (ReleasedRaids.Contains(raid.Id)) continue;
             // A raid is the squad's once it has had an Operative; it stays so after the Operative dies, or the raid goes back to vanilla AI and its exit.
             if (members.Any(p => registry.TryGet(p.ThingID, out _))) CommandedRaids.Add(raid.Id);
             if (!CommandedRaids.Contains(raid.Id)) continue;
+            // No colonist left alive (downed ones count): nothing to command against. Let go for good, so the raid's own lord loots and leaves.
+            if (members.Count > 0 && Watches.ContainsKey(raid.Id) && members[0].Map.mapPawns.FreeColonistsSpawned.Count == 0)
+            {
+                ReleasedRaids.Add(raid.Id);
+                CommandedRaids.Remove(raid.Id);
+                foreach (var p in members) OperativeJobExecutor.Release(p, StateOf(p));
+                Loop.Forget(raid.Id);
+                Log.Message($"[Adaptive Hostiles] raid {raid.Id}: no colonists left, the squad lets go and vanilla AI takes over.");
+                continue;
+            }
             foreach (var p in members) Controlled[p.ThingID] = raid.StartTick;
 
             if (!Timings.TryGetValue(raid.Id, out var timing))
@@ -228,6 +244,12 @@ public static class SquadDriver
                 BreachMemory[raid.Id] = kept = (now, BreachFinder.Find(lead, leadMap, defenders, turrets, centre, Danger, now, visionWall, exposed), BaseVisionService.Version);
             var breaches = kept.Points;
             if (kept.Tick == now)
+            {
+                var openings = BreachFinder.CountOpenings(lead.Map, centre);
+                OpeningsMemory[raid.Id] = openings;
+                Log.Message($"[Adaptive Hostiles] raid {raid.Id}: the colony's building has {openings} opening(s).");
+            }
+            if (kept.Tick == now)
                 Log.Message($"[Adaptive Hostiles] breach points for raid {raid.Id}: " + string.Join("; ", breaches.Select(b =>
                     $"{b.Id} stand ({b.X},{b.Z}) {(b.WallX >= 0 ? $"wall ({b.WallX},{b.WallZ})" : "open")} weakness {b.Weakness:0.00}")));
 
@@ -254,7 +276,8 @@ public static class SquadDriver
                 squad.Add(new SquadMember(snap, isOp, melee));
             }
             return new SquadSnapshot(raid.Id, squad, sent, down, retreated, breaches,
-                DangerZones: Danger.Hotspots(now, 5), DamageDealt: MeasureDamage(watch, defenders, breaches), Defenders: defenders.Count);
+                DangerZones: Danger.Hotspots(now, 5), DamageDealt: MeasureDamage(watch, defenders, breaches), Defenders: defenders.Count,
+                Openings: OpeningsMemory.TryGetValue(raid.Id, out var openingCount) ? openingCount : -1);
         }
 
         // A pinned breach whose wall or door has been destroyed is stale: the squad has to find the next one on the path.

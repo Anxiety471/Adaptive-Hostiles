@@ -29,7 +29,8 @@ public sealed record SquadSnapshot(
     string SquadId, IReadOnlyList<SquadMember> Members, int Sent, int Down, int Retreated,
     IReadOnlyList<BreachPoint>? BreachPoints = null,
     SquadPhase PreviousPhase = SquadPhase.Gather, int GatherCycles = 0, int BreachCycles = 0,
-    IReadOnlyList<DangerZone>? DangerZones = null, double DamageDealt = 0, int Defenders = 0, FlankOffer? Flank = null)
+    IReadOnlyList<DangerZone>? DangerZones = null, double DamageDealt = 0, int Defenders = 0, FlankOffer? Flank = null,
+    int Openings = -1)
 {
     public IReadOnlyList<BreachPoint> Breaches => BreachPoints ?? Array.Empty<BreachPoint>();
 
@@ -49,7 +50,7 @@ public sealed record SquadDecision(
     SquadTactic Tactic, string? FocusTargetId,
     IReadOnlyDictionary<string, OperativeDecision> Members, bool IsModelDecision,
     string? BreachId = null, SquadPhase Phase = SquadPhase.Breach,
-    RangedRole RangedRole = RangedRole.Cover, bool MeleeHold = false, int FlankSize = 0, bool AllIn = false);
+    RangedRole RangedRole = RangedRole.Cover, bool MeleeHold = false, int FlankSize = 0, bool AllIn = false, int FunnelSize = 0);
 
 /// <summary>
 /// One model call per squad per cycle. Jev sees every member's exact candidate cells and answers a
@@ -77,7 +78,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
     public const float PointBlank = 3f;
 
     public async Task<SquadDecision> DecideAsync(SquadSnapshot squad, CancellationToken cancellationToken = default) =>
-        CapTargets(SquadCoordination.CoverFire(SquadCoordination.MeleeTiming(SquadCoordination.FollowUp(RangedEngage(CoverHop(Sync(SquadCommitment.Apply(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad), squad), squad), squad), squad), squad);
+        CapTargets(SquadCoordination.Funnel(SquadCoordination.CoverFire(SquadCoordination.MeleeTiming(SquadCoordination.FollowUp(RangedEngage(CoverHop(Sync(SquadCommitment.Apply(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad), squad), squad), squad), squad), squad), squad);
 
     private async Task<SquadDecision> DecideCoreAsync(SquadSnapshot squad, CancellationToken cancellationToken)
     {
@@ -177,6 +178,20 @@ public sealed class SquadPlanner(IJevClient? client = null)
             };
         }
 
+        if (squad.Openings == 1 && squad.Members.Count >= SquadCoordination.FunnelMinSquad && squad.Breaches.Count > 0)
+        {
+            var funnelOptions = new Dictionary<string, string>();
+            for (var n = 2; n <= 4; n++)
+                funnelOptions[$"funnel_{n}"] = $"{n} raiders go through the opening; the others take their own spots and keep the defenders busy.";
+            funnelOptions["funnel_all"] = "Everyone pushes through the one opening.";
+            questions["funnel"] = new
+            {
+                type = "choice",
+                instructions = "The colony's building has exactly one opening, so only a few raiders can use it at a time; the rest would queue behind it in the defenders' fire. How many should go through? Use `defenders` and `breachPoints` to judge: a small group is enough for a weak defence, more when the defenders are few and hurt.",
+                criteria = funnelOptions
+            };
+        }
+
         if (members.Any(m => !m.Member.IsMelee) && squad.Targets.Any(t => t.Kind != "turret"))
         {
             questions["engagement"] = new
@@ -270,6 +285,9 @@ public sealed class SquadPlanner(IJevClient? client = null)
 
             // No answer keeps the default: the ranged kite.
             var allIn = JevAnswers.Choice(root, "engagement") == "all_in";
+            var funnelAnswer = JevAnswers.Choice(root, "funnel");
+            var funnelSize = funnelAnswer == "funnel_all" ? -1
+                : funnelAnswer is not null && funnelAnswer.StartsWith("funnel_", StringComparison.Ordinal) && int.TryParse(funnelAnswer.AsSpan(7), out var fn) && fn is >= 2 and <= 4 ? fn : 0;
 
             var decisions = new Dictionary<string, OperativeDecision>(StringComparer.Ordinal);
             var taken = new HashSet<string>(StringComparer.Ordinal);
@@ -293,7 +311,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
                 if (!valid && chosen.DestinationId != "hold") taken.Add(chosen.DestinationId);
                 decisions[id] = chosen;
             }
-            return new SquadDecision(tactic, focusId, decisions, true, breachId, phase, rangedRole, hold, flankSize, allIn);
+            return new SquadDecision(tactic, focusId, decisions, true, breachId, phase, rangedRole, hold, flankSize, allIn, funnelSize);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return fallback; }
         catch (HttpRequestException) { return fallback; }

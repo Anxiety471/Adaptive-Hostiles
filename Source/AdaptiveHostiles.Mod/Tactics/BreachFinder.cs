@@ -17,6 +17,54 @@ public static class BreachFinder
     private const int MaxPathTargets = 5;
     private const int MinSpacing = 8;
 
+    private const float OpeningScanRadius = 30f;
+
+    /// <summary>
+    /// How many openings the building around the defenders has: an outside doorway or gap, a walkable cell with a wall on both
+    /// sides of one axis and a roof over one end of the other axis but not the other. Neighbouring such cells are one opening.
+    /// A base with no such cell is sealed or open, and counts 0 or many.
+    /// </summary>
+    public static int CountOpenings(Map map, IntVec3 centre)
+    {
+        if (!centre.IsValid) return -1;
+        bool Wall(int x, int z)
+        {
+            var c = new IntVec3(x, 0, z);
+            return c.InBounds(map) && c.Impassable(map) && c.GetEdifice(map) != null;
+        }
+        bool Roofed(int x, int z)
+        {
+            var c = new IntVec3(x, 0, z);
+            return c.InBounds(map) && c.Roofed(map);
+        }
+        var holes = new List<IntVec3>();
+        foreach (var c in GenRadial.RadialCellsAround(centre, OpeningScanRadius, true))
+        {
+            if (!c.InBounds(map) || !c.Walkable(map)) continue;
+            var x = c.x;
+            var z = c.z;
+            var eastWest = Wall(x, z + 1) && Wall(x, z - 1) && Roofed(x + 1, z) != Roofed(x - 1, z);
+            var northSouth = Wall(x + 1, z) && Wall(x - 1, z) && Roofed(x, z + 1) != Roofed(x, z - 1);
+            if (eastWest || northSouth) holes.Add(c);
+        }
+        var clusters = 0;
+        var seen = new HashSet<IntVec3>();
+        foreach (var h in holes)
+        {
+            if (!seen.Add(h)) continue;
+            clusters++;
+            var queue = new Queue<IntVec3>();
+            queue.Enqueue(h);
+            while (queue.Count > 0)
+            {
+                var cur = queue.Dequeue();
+                foreach (var n in holes)
+                    if (!seen.Contains(n) && Math.Abs(n.x - cur.x) <= 2 && Math.Abs(n.z - cur.z) <= 2 && seen.Add(n)) queue.Enqueue(n);
+            }
+        }
+        return clusters;
+    }
+
     public static IntVec3 DefenderCentre(IReadOnlyList<Pawn> defenders, IReadOnlyList<Building_Turret> turrets)
     {
         var cells = defenders.Select(p => p.Position).Concat(turrets.Select(t => t.Position)).ToList();

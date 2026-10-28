@@ -927,6 +927,34 @@ await Check("kite: a ranged raider steps outside the colonists' weapon range, in
     Require((await new SquadPlanner(kiteAns).DecideAsync(squad)).Members["r1"].Kite, "kite answer ignored");
 });
 
+await Check("funnel: a building with one opening sends a small group through, the rest take their own spots", async () =>
+{
+    MovementCandidate C(string id, string purpose, int x, int z, float exposure = 0.2f) => new(id, x, z, 0.5f, exposure, 10, purpose, true);
+    SquadMember Mk(string id, bool melee, int x) => new(new OperativeSnapshot(id, x, 90, 1f, "x", 2, new[]
+    {
+        C($"{id}_b", "breach_B1", 140, 90), C($"{id}_s", "support_B1", 130, 92), C($"{id}_p", "press_B1", 150, 90), C($"{id}_st", "stage_B1", 100, 90),
+        C($"{id}_hide", "cover", x, 80, 0.05f), C($"{id}_seen", "cover", x, 100, 0.9f)
+    }, new[] { new TargetCandidate("c1", 160, 90, 0.9f, true) }, false, melee ? 2f : 30f), false, melee);
+    var members = new[] { Mk("m1", true, 125), Mk("m2", true, 120), Mk("m3", true, 115), Mk("m4", true, 110), Mk("r1", false, 124), Mk("r2", false, 105) };
+    SquadSnapshot Snap(int openings) => new("s", members, 6, 0, 0, new[] { new BreachPoint("B1", 140, 90, 0.9f, 0, 0) }, SquadPhase.Breach, Openings: openings);
+    var one = await new SquadPlanner().DecideAsync(Snap(1));
+    Require(one.FunnelSize == SquadCoordination.FunnelDefault, "funnel size not applied to a one-opening building");
+    var holders = members.Where(m => one.Members[m.Snapshot.PawnId].DestinationId.EndsWith("_hide")).ToList();
+    Require(holders.Count == members.Length - SquadCoordination.FunnelDefault, $"expected {members.Length - SquadCoordination.FunnelDefault} raiders on their own spots, got {holders.Count}");
+    Require(holders.All(h => one.Members[h.Snapshot.PawnId].DestinationId == h.Snapshot.PawnId + "_hide"), "holders did not take the least exposed spot");
+    Require(one.Members["m1"].DestinationId != "m1_hide", "the raider nearest the opening was held back");
+    // several openings, or an unknown count: nobody is held back
+    var many = await new SquadPlanner().DecideAsync(Snap(3));
+    Require(many.FunnelSize == 0 && members.All(m => !many.Members[m.Snapshot.PawnId].DestinationId.EndsWith("_hide")), "funnel applied with several openings");
+    // Jev chooses the group size, or everyone
+    FakeClient Ans(string funnel) => new("{\"answers\":{\"tactic\":{\"type\":\"choice\",\"choice\":\"suppress_push\"},\"focus\":{\"type\":\"choice\",\"choice\":\"none\"},\"breach\":{\"type\":\"choice\",\"choice\":\"B1\"},\"phase\":{\"type\":\"choice\",\"choice\":\"breach\"},\"funnel\":{\"type\":\"choice\",\"choice\":\"" + funnel + "\"}}}");
+    var two = Ans("funnel_2");
+    var d2 = await new SquadPlanner(two).DecideAsync(Snap(1));
+    Require(two.LastQuestions!.ContainsKey("funnel") && d2.FunnelSize == 2, "funnel_2 not applied");
+    var all = await new SquadPlanner(Ans("funnel_all")).DecideAsync(Snap(1));
+    Require(members.All(m => !all.Members[m.Snapshot.PawnId].DestinationId.EndsWith("_hide")), "funnel_all still held raiders back");
+});
+
 await Check("targets: a badly hurt enemy is finished before the focus target", async () =>
 {
     var strong = new TargetCandidate("a", 10, 10, 0.9f, true);

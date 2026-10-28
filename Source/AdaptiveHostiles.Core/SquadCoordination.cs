@@ -297,6 +297,45 @@ public static class SquadCoordination
         return decision with { Members = members };
     }
 
+    /// <summary>A hostile non-colony pawn (mech, manhunter, another faction) in sight this close is fought at once.</summary>
+    public const float EnemyEngageWithin = 30f;
+
+    /// <summary>
+    /// Mechs, anomalies and other factions' pawns that are hostile to the raid are fought on sight, not only after they attack.
+    /// Every raider with such an enemy in sight within <see cref="EnemyEngageWithin"/> cells targets the nearest one: ranged raiders shoot from where
+    /// they stand when it is in weapon range, otherwise they close to a firing cell; melee raiders head for the cell nearest it. A raider already
+    /// at its breach or press cell keeps going unless the enemy is within 12 cells. Withdrawing, fleeing and kiting raiders are left alone.
+    /// </summary>
+    public static SquadDecision EngageEnemies(SquadDecision decision, SquadSnapshot squad)
+    {
+        if (SquadCommitment.Losing(squad)) return decision;
+        var members = new Dictionary<string, OperativeDecision>(decision.Members, StringComparer.Ordinal);
+        foreach (var m in squad.Members)
+        {
+            if (!members.TryGetValue(m.Snapshot.PawnId, out var d) || d.Kite || d.Stance is TacticalStance.Withdraw or TacticalStance.Flee) continue;
+            var near = m.Snapshot.Targets.Where(t => t.Visible && t.Kind == "enemy" && Dist(m, t.X, t.Z) <= EnemyEngageWithin)
+                .OrderBy(t => Dist(m, t.X, t.Z)).ThenBy(t => t.Id, StringComparer.Ordinal).FirstOrDefault();
+            if (near is null) continue;
+            var dist = Dist(m, near.X, near.Z);
+            var purpose = m.Snapshot.Destinations.FirstOrDefault(c => c.Id == d.DestinationId)?.Purpose ?? "";
+            if (dist > 12 && (purpose.StartsWith("breach_", StringComparison.Ordinal) || purpose.StartsWith("press_", StringComparison.Ordinal))) continue;
+            var ranged = CarriesRangedWeapon(m);
+            if (ranged && (d.DestinationId == "hold" || dist <= Math.Max(m.Snapshot.WeaponRange, 2f) * 0.9))
+            {
+                members[m.Snapshot.PawnId] = d with { TargetId = near.Id, Stance = TacticalStance.Aggressive };
+                continue;
+            }
+            var stand = ranged ? StandOff(m) : 0.0;
+            var cell = m.Snapshot.Destinations
+                .Where(c => c.Reachable && c.Purpose is "advance" or "firing_position" or "cover")
+                .OrderBy(c => c.InTurretRange)
+                .ThenBy(c => Math.Abs(Math.Sqrt((c.X - near.X) * (c.X - near.X) + (c.Z - near.Z) * (c.Z - near.Z)) - stand))
+                .ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault();
+            members[m.Snapshot.PawnId] = d with { DestinationId = cell?.Id ?? d.DestinationId, TargetId = near.Id, Stance = TacticalStance.Aggressive };
+        }
+        return decision with { Members = members };
+    }
+
     /// <summary>A squad needs at least this many raiders before a single opening limits who goes through.</summary>
     public const int FunnelMinSquad = 5;
     public const int FunnelDefault = 3;

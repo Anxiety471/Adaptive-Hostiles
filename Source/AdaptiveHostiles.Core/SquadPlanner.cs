@@ -78,7 +78,7 @@ public sealed class SquadPlanner(IJevClient? client = null)
     public const float PointBlank = 3f;
 
     public async Task<SquadDecision> DecideAsync(SquadSnapshot squad, CancellationToken cancellationToken = default) =>
-        CapTargets(SquadCoordination.EngageOpen(SquadCoordination.Funnel(SquadCoordination.CoverFire(SquadCoordination.MeleeTiming(SquadCoordination.FollowUp(SquadCoordination.SurroundOpen(RangedEngage(CoverHop(Sync(SquadCommitment.Apply(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad), squad), squad), squad), squad), squad), squad), squad), squad);
+        CapTargets(SquadCoordination.EngageEnemies(SquadCoordination.EngageOpen(SquadCoordination.Funnel(SquadCoordination.CoverFire(SquadCoordination.MeleeTiming(SquadCoordination.FollowUp(SquadCoordination.SurroundOpen(RangedEngage(CoverHop(Sync(SquadCommitment.Apply(await DecideCoreAsync(squad, cancellationToken).ConfigureAwait(false), squad), squad), squad), squad), squad), squad), squad), squad), squad), squad), squad), squad);
 
     private async Task<SquadDecision> DecideCoreAsync(SquadSnapshot squad, CancellationToken cancellationToken)
     {

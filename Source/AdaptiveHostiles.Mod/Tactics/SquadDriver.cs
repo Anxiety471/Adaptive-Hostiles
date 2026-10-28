@@ -93,6 +93,7 @@ public static class SquadDriver
             try
             {
                 Loop.Tick(raid.Id, new Host(raid, members, registry, timing), tick, SeedFor(raid.Id));
+                MopUp(members);
             }
             catch (Exception e)
             {
@@ -100,6 +101,22 @@ public static class SquadDriver
                 Log.Warning($"[Adaptive Hostiles] Squad loop failed for raid {raid.Id}: {e.Message}");
                 Loop.Abort(raid.Id);
             }
+        }
+    }
+
+    /// <summary>
+    /// With no able colonist left the squad has nothing to sample, so its raiders would wander off on vanilla AI. They finish off
+    /// the downed colonists instead.
+    /// </summary>
+    private static void MopUp(List<Pawn> members)
+    {
+        var map = members[0].Map;
+        if (map.mapPawns.FreeColonistsSpawned.Any(c => !c.Downed)) return;
+        foreach (var p in members)
+        {
+            if (OperativeSampler.BlockFor(p) != PawnBlock.None) continue;
+            if (DownedExecution.Pick(p) is { } downed)
+                OperativeJobExecutor.AttackNow(p, downed, StateOf(p));
         }
     }
 
